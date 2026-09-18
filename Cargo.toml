@@ -7,7 +7,7 @@ description = "Rust market engine: Polymarket ingestion + Jev signals + paper tr
 
 # Core: tokio / reqwest / tungstenite / serde / tracing (AGENTS.md 1.1)
 # Venue: Polymarket official Rust SDK (clob, ws, rtds, data, gamma)
-# Storage: questdb-rs (ILP ingest) + sqlx (Postgres relational)
+# Storage: questdb-rs (ILP ingest)
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "rustls"] }
@@ -19,6 +19,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "chrono"] }
 polymarket_client_sdk_v2 = { version = "0.8", features = ["clob", "ws", "rtds", "data", "gamma", "tracing"] }
 questdb-rs = "6.1.0"
+futures-util = "0.3.34"
+thiserror = "2.0.20"
+smallvec = "1.16.1"
+ringbuf = "0.5.2"
+hdrhistogram = "7.6.0"
+ndarray = "0.17.2"
+RustQuant_math = "0.4"
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.11.0"
+
+[[bench]]
+name = "feature_builder"
+harness = false
+
+[[bench]]
+name = "orderbook"
+harness = false

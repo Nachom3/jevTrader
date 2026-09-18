@@ -5,6 +5,7 @@
 //! Feature / State Builder; only the builder output ever reaches Jev.
 //! Every Jev call is persisted as [`JevSignal`] with its exact state JSON.
 
+use jevtrader::domain::{Decision, TradeSide, Trigger};
 use serde::{Deserialize, Serialize};
 
 /// Hot in-RAM state for one market, rebuilt on every relevant WS event.
@@ -50,12 +51,6 @@ pub struct MarketState {
     pub recent_information: Vec<NewsItem>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TradeSide {
-    Buy,
-    Sell,
-}
-
 /// Underlying / external context. `None` distance for non-price markets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalData {
@@ -76,30 +71,6 @@ pub struct NewsItem {
     pub dedup_hash: String,
 }
 
-/// What woke the pipeline up. Persisted as the `trigger` symbol in QuestDB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Trigger {
-    PriceMove,
-    SpreadChange,
-    SpotMove,
-    TimeStop,
-    AbnormalVolume,
-    RelevantNews,
-}
-
-impl Trigger {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Trigger::PriceMove => "price_move",
-            Trigger::SpreadChange => "spread_change",
-            Trigger::SpotMove => "spot_move",
-            Trigger::TimeStop => "time_stop",
-            Trigger::AbnormalVolume => "abnormal_volume",
-            Trigger::RelevantNews => "relevant_news",
-        }
-    }
-}
-
 /// One persisted Jev evaluation: answers + the exact state that produced them.
 /// Noul answers carry no confidence; only the Score (`resolution_risk`) does.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,12 +87,6 @@ pub struct JevSignal {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub trigger: Trigger,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Decision {
-    Skip,
-    Trade,
 }
 
 /// Strategy output, persisted for paper-trading audit.

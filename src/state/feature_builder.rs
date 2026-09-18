@@ -1,0 +1,336 @@
+//! Pure feature construction for the lead-lag strategy.
+//!
+//! The builder accepts only caller-owned values and never reads a clock or does
+//! I/O. External ticks must be oldest-first. Horizon returns are simple
+//! percentage returns from the latest tick to a timestamp `horizon` milliseconds
+//! earlier. The earlier price is linearly interpolated between neighboring
+//! irregularly-timed ticks; a horizon without a complete bracketed history
+//! returns `0.0`.
+//!
+//! Realized volatility is the population standard deviation of the consecutive
+//! one-second simple percentage returns on the same interpolated time grid. It
+//! is reported as plain percentage points, not annualized. A complete one-minute
+//! or five-minute grid is required; otherwise that volatility field is `0.0`.
+//! The target distance is `(spot / target - 1) * 100`, and cross-exchange
+//! differences use the first value relative to the second value. Invalid or
+//! non-positive prices produce the documented `0.0` default for the affected
+//! derived value.
+
+use crate::state::rolling::Returns;
+use crate::strategy::lead_lag::{LeadLagFeatures, PolySnapshot};
+
+/// One external venue tick, ordered oldest-first in the builder input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExternalTick {
+    pub price: f64,
+    pub ts_ms: u64,
+}
+
+/// Microprices and basis supplied by venue/feed actors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VenueMicroprices {
+    pub binance: f64,
+    pub coinbase: f64,
+    pub perp: f64,
+    pub perp_basis_pct: f64,
+}
+
+/// Order-flow aggregates supplied by the feed actor.
+///
+/// OFI is intentionally an input here. This pure builder does not reconstruct
+/// it from book events; feed-specific OFI computation belongs to a later actor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OrderFlowAggregates {
+    pub buy_vol_1s: f64,
+    pub sell_vol_1s: f64,
+    pub ofi_1s: f64,
+    pub ofi_5s: f64,
+    pub imbalance: f64,
+    pub aggressive_buy_ratio: f64,
+}
+
+/// Builds deterministic lead-lag features from snapshots already collected by
+/// the feed actors.
+///
+/// `target` is the market's numeric resolution target. The current
+/// [`PolySnapshot`] is accepted as part of the state-builder boundary even
+/// though the current [`LeadLagFeatures`] schema has no Polymarket fields to
+/// copy; keeping it in the pure API prevents callers from silently dropping the
+/// venue snapshot as the schema evolves. Time-to-resolution and resolution
+/// source are not derivable from these inputs, so the builder emits their
+/// neutral defaults (`0` and an empty string) until a later context-bearing API
+/// is introduced.
+#[must_use]
+pub fn build_features(
+    recent_ticks: &[ExternalTick],
+    _poly_snapshot: &PolySnapshot,
+    target: f64,
+    venues: VenueMicroprices,
+    order_flow: OrderFlowAggregates,
+) -> LeadLagFeatures {
+    let spot = recent_ticks
+        .last()
+        .and_then(|tick| valid_price(tick.price))
+        .unwrap_or(0.0);
+    let end_ts = recent_ticks.last().map(|tick| tick.ts_ms);
+
+    let ret = |horizon_ms| {
+        end_ts
+            .and_then(|end| percentage_return(recent_ticks, end, horizon_ms))
+            .unwrap_or(0.0)
+    };
+
+    let realized_vol = |seconds| {
+        end_ts
+            .map(|end| realized_volatility(recent_ticks, end, seconds))
+            .unwrap_or(0.0)
+    };
+
+    LeadLagFeatures {
+        target: finite_or_zero(target),
+        time_remaining_secs: 0,
+        resolution_source: String::new(),
+        spot,
+        distance_to_target_pct: relative_difference(spot, target),
+        ret_250ms_pct: ret(250),
+        ret_1s_pct: ret(1_000),
+        ret_5s_pct: ret(5_000),
+        ret_30s_pct: ret(30_000),
+        ret_5m_pct: ret(300_000),
+        realized_vol_1m_pct: realized_vol(60),
+        realized_vol_5m_pct: realized_vol(300),
+        binance_microprice: finite_or_zero(venues.binance),
+        coinbase_microprice: finite_or_zero(venues.coinbase),
+        perp_price: finite_or_zero(venues.perp),
+        perp_basis_pct: finite_or_zero(venues.perp_basis_pct),
+        buy_vol_1s: finite_or_zero(order_flow.buy_vol_1s),
+        sell_vol_1s: finite_or_zero(order_flow.sell_vol_1s),
+        ofi_1s: finite_or_zero(order_flow.ofi_1s),
+        ofi_5s: finite_or_zero(order_flow.ofi_5s),
+        book_imbalance: finite_or_zero(order_flow.imbalance),
+        aggressive_buy_ratio: finite_or_zero(order_flow.aggressive_buy_ratio),
+        binance_coinbase_diff_pct: relative_difference(venues.binance, venues.coinbase),
+        spot_perp_diff_pct: relative_difference(spot, venues.perp),
+    }
+}
+
+fn percentage_return(ticks: &[ExternalTick], end_ts: u64, horizon_ms: u64) -> Option<f64> {
+    let end_price = interpolated_price(ticks, end_ts)?;
+    let start_ts = end_ts.checked_sub(horizon_ms)?;
+    let start_price = interpolated_price(ticks, start_ts)?;
+    Returns::between(start_price, end_price)
+}
+
+fn realized_volatility(ticks: &[ExternalTick], end_ts: u64, seconds: u64) -> f64 {
+    if seconds == 0 {
+        return 0.0;
+    }
+
+    let Some(oldest_ts) = ticks.first().map(|tick| tick.ts_ms) else {
+        return 0.0;
+    };
+    let horizon_ms = seconds.saturating_mul(1_000);
+    if end_ts.saturating_sub(oldest_ts) < horizon_ms {
+        return 0.0;
+    }
+
+    let mut count = 0_u64;
+    let mut sum = 0.0;
+    let mut sum_squares = 0.0;
+
+    for step in (1..=seconds).rev() {
+        let old_ts = end_ts.saturating_sub(step.saturating_mul(1_000));
+        let new_ts = end_ts.saturating_sub((step - 1).saturating_mul(1_000));
+        let Some(old_price) = interpolated_price(ticks, old_ts) else {
+            return 0.0;
+        };
+        let Some(new_price) = interpolated_price(ticks, new_ts) else {
+            return 0.0;
+        };
+        let Some(return_pct) = Returns::between(old_price, new_price) else {
+            return 0.0;
+        };
+
+        count += 1;
+        sum += return_pct;
+        sum_squares += return_pct * return_pct;
+    }
+
+    let mean = sum / count as f64;
+    (sum_squares / count as f64 - mean * mean).max(0.0).sqrt()
+}
+
+/// Finds a price on an irregular timestamp series by exact lookup or linear
+/// interpolation. Values before the oldest tick are unavailable rather than
+/// extrapolated; the latest timestamp can be returned exactly.
+fn interpolated_price(ticks: &[ExternalTick], target_ts: u64) -> Option<f64> {
+    let right = ticks.partition_point(|tick| tick.ts_ms < target_ts);
+    if right == ticks.len() {
+        return ticks.last().and_then(|tick| {
+            (tick.ts_ms == target_ts)
+                .then_some(tick)
+                .and_then(|tick| valid_price(tick.price))
+        });
+    }
+
+    let right_tick = ticks.get(right)?;
+    if right_tick.ts_ms == target_ts {
+        return valid_price(right_tick.price);
+    }
+    if right == 0 {
+        return None;
+    }
+
+    let left_tick = &ticks[right - 1];
+    let left_price = valid_price(left_tick.price)?;
+    let right_price = valid_price(right_tick.price)?;
+    let span = right_tick.ts_ms.checked_sub(left_tick.ts_ms)?;
+    if span == 0 {
+        return Some(right_price);
+    }
+
+    let fraction = (target_ts - left_tick.ts_ms) as f64 / span as f64;
+    Some(left_price + (right_price - left_price) * fraction)
+}
+
+fn valid_price(price: f64) -> Option<f64> {
+    (price.is_finite() && price > 0.0).then_some(price)
+}
+
+fn finite_or_zero(value: f64) -> f64 {
+    value.is_finite().then_some(value).unwrap_or(0.0)
+}
+
+fn relative_difference(value: f64, reference: f64) -> f64 {
+    match (valid_price(value), valid_price(reference)) {
+        (Some(value), Some(reference)) => (value / reference - 1.0) * 100.0,
+        _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExternalTick, OrderFlowAggregates, VenueMicroprices, build_features};
+    use crate::strategy::lead_lag::PolySnapshot;
+
+    fn poly_snapshot() -> PolySnapshot {
+        PolySnapshot {
+            yes_bid: 0.40,
+            yes_ask: 0.42,
+            bid_depth: 100.0,
+            ask_depth: 90.0,
+            spread: 0.02,
+            book_imbalance: 0.05,
+            last_trade_price: 0.41,
+            price_1s_ago: 0.40,
+            price_5s_ago: 0.39,
+            price_30s_ago: 0.38,
+        }
+    }
+
+    fn venues() -> VenueMicroprices {
+        VenueMicroprices {
+            binance: 101.0,
+            coinbase: 100.0,
+            perp: 102.0,
+            perp_basis_pct: 2.0,
+        }
+    }
+
+    fn flow() -> OrderFlowAggregates {
+        OrderFlowAggregates {
+            buy_vol_1s: 4.0,
+            sell_vol_1s: 3.0,
+            ofi_1s: 1.0,
+            ofi_5s: 2.0,
+            imbalance: 0.1,
+            aggressive_buy_ratio: 0.6,
+        }
+    }
+
+    fn flat_ticks() -> Vec<ExternalTick> {
+        (0..=300_000)
+            .step_by(1_000)
+            .map(|ts_ms| ExternalTick {
+                price: 100.0,
+                ts_ms,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn flat_series_has_zero_returns_and_volatility() {
+        let features = build_features(&flat_ticks(), &poly_snapshot(), 100.0, venues(), flow());
+
+        assert_eq!(features.spot, 100.0);
+        assert!(features.ret_250ms_pct.abs() < f64::EPSILON);
+        assert!(features.ret_1s_pct.abs() < f64::EPSILON);
+        assert!(features.ret_5s_pct.abs() < f64::EPSILON);
+        assert!(features.ret_30s_pct.abs() < f64::EPSILON);
+        assert!(features.ret_5m_pct.abs() < f64::EPSILON);
+        assert!(features.realized_vol_1m_pct.abs() < f64::EPSILON);
+        assert!(features.realized_vol_5m_pct.abs() < f64::EPSILON);
+        assert!(features.distance_to_target_pct.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn irregular_interpolation_preserves_expected_return_signs() {
+        let ticks = vec![
+            ExternalTick {
+                price: 100.0,
+                ts_ms: 0,
+            },
+            ExternalTick {
+                price: 100.0,
+                ts_ms: 299_000,
+            },
+            ExternalTick {
+                price: 110.0,
+                ts_ms: 300_000,
+            },
+        ];
+        let features = build_features(&ticks, &poly_snapshot(), 120.0, venues(), flow());
+
+        assert!(features.ret_250ms_pct > 0.0);
+        assert!(features.ret_1s_pct > 0.0);
+        assert!(features.ret_5s_pct > 0.0);
+        assert!(features.ret_30s_pct > 0.0);
+        assert!(features.ret_5m_pct > 0.0);
+        assert!(features.distance_to_target_pct < 0.0);
+        assert!(features.spot_perp_diff_pct > 0.0);
+    }
+
+    #[test]
+    fn empty_and_short_series_use_zero_derived_defaults_without_panicking() {
+        let empty = build_features(&[], &poly_snapshot(), 100.0, venues(), flow());
+        assert_eq!(empty.spot, 0.0);
+        assert_eq!(empty.ret_1s_pct, 0.0);
+        assert_eq!(empty.realized_vol_5m_pct, 0.0);
+        assert_eq!(empty.distance_to_target_pct, 0.0);
+
+        let short = [ExternalTick {
+            price: 123.0,
+            ts_ms: 10,
+        }];
+        let features = build_features(&short, &poly_snapshot(), 100.0, venues(), flow());
+        assert_eq!(features.spot, 123.0);
+        assert_eq!(features.ret_5m_pct, 0.0);
+        assert_eq!(features.realized_vol_1m_pct, 0.0);
+        assert!((features.distance_to_target_pct - 23.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn order_flow_and_cross_exchange_inputs_are_forwarded_deterministically() {
+        let features = build_features(&flat_ticks(), &poly_snapshot(), 100.0, venues(), flow());
+
+        assert_eq!(features.buy_vol_1s, 4.0);
+        assert_eq!(features.sell_vol_1s, 3.0);
+        assert_eq!(features.ofi_1s, 1.0);
+        assert_eq!(features.ofi_5s, 2.0);
+        assert_eq!(features.book_imbalance, 0.1);
+        assert_eq!(features.aggressive_buy_ratio, 0.6);
+        assert!((features.binance_coinbase_diff_pct - 1.0).abs() < 1e-12);
+        let expected_spot_perp_diff = (100.0 / 102.0 - 1.0) * 100.0;
+        assert!((features.spot_perp_diff_pct - expected_spot_perp_diff).abs() < 1e-12);
+    }
+}

@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # Pinned by SHA (see comments for the moving tag each tracks).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets --all-features
+
   gitleaks:
     name: gitleaks (secrets)
     runs-on: ubuntu-latest

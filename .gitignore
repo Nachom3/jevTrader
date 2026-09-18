@@ -3,6 +3,7 @@
 
 # Local agent/tooling state (never commit)
 .pi/
+.codegraph/
 skills-lock.json
 
 # Rust
@@ -10,3 +11,5 @@ target/
 
 # Secrets (use env.example as template)
 .env
+odd/
+.github/
