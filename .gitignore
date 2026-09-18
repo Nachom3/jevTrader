@@ -1,0 +1,12 @@
+# Local Pi runtime state
+.atl/
+
+# Local agent/tooling state (never commit)
+.pi/
+skills-lock.json
+
+# Rust
+target/
+
+# Secrets (use env.example as template)
+.env

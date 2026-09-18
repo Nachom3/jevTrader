@@ -1,0 +1,27 @@
+---
+# Local infra: QuestDB (time-series) + Postgres (relational).
+# Usage: docker compose up -d
+services:
+  questdb:
+    image: questdb/questdb:latest
+    ports:
+      - "9000:9000"  # HTTP / console / ILP-over-HTTP
+      - "8812:8812"  # Postgres wire protocol
+      - "9009:9009"  # ILP over TCP (questdb-rs ingest)
+    volumes:
+      - questdb_data:/var/lib/questdb
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: jevtrader
+      POSTGRES_PASSWORD: jevtrader
+      POSTGRES_DB: jevtrader
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  questdb_data:
+  pgdata:
