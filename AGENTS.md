@@ -158,6 +158,7 @@ gamma_id, slug, condition_id, event_id, question, description, resolution_source
 - `jev_signals` (CLAVE backtesting): ts, condition_id, state_hash, state_json, questions_json, likely_yes, underpriced, resolution_risk (+ confidences), latency_ms, tokens_in/out, trigger. Cada llamada Jev = una fila + state exacto.
 - `paper_decisions`: ts, condition_id, jev_ts, edge, threshold, decision (SKIP/TRADE), paper_price, size, fair_value.
 - `resolutions`: condition_id, winning_token_id, winning_outcome, resolved_ts. Label para medir edge real.
+- `maker_markouts` (Lead-Lag V1): ts, condition_id, jev_ts, side, price, size, mid_1s/5s/30s, pnl_1s/5s/30s_pp. Labels de markout maker: la variable objetivo principal.
 
 ### 9.3 Postgres relacional (no temporal)
 
@@ -217,3 +218,17 @@ Si hay conflicto entre este archivo y la doc viva, manda la doc oficial.
 - Estado caliente en memoria; temporal en QuestDB, relacional en Postgres.
 - Cada llamada a Jev persiste en `jev_signals`: market_id, state_hash + state JSON, questions, latencia, respuesta, usage.
 - Pesos y thresholds en codigo, no en prompts.
+
+## 15. Estrategia V1: Jev Lead-Lag Maker (nucleo del alpha)
+
+Spec completa: `docs/strategy-lead-lag-v1.md`. Codigo: `src/strategy/lead_lag.rs`.
+Tesis: detectar que la info externa ya implica un movimiento de probabilidad
+que Polymarket no incorporo; entrar maker post-only antes del repricing.
+Capturar repricing, no resolucion.
+
+8 outputs en UN request (paralelo): `yes_pressure_5s`, `no_pressure_5s`,
+`move_persists`, `underreact_up`, `underreact_down` (Noul) +
+`repricing_ticks` (Choice UP_3+/UP_2/UP_1/FLAT/DOWN_1/DOWN_2/DOWN_3+) +
+`fill_before_decay`, `fill_toxic` (Noul con candidate order en el state).
+Regla inicial `should_quote`: under_up>.75, p_up>=1tick>.65, persist>.60,
+fill>.60, toxic<.30, sin conflicto. Labels: markouts maker +1s/+5s/+30s.

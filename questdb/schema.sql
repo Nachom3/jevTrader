@@ -127,3 +127,18 @@ CREATE TABLE IF NOT EXISTS resolutions (
 -- winning_outcome: YES | NO | FIFTY (UMA 50/50). Label for measuring real edge:
 --   SELECT s.*, r.winning_outcome FROM jev_signals s
 --   LEFT JOIN resolutions r ON s.condition_id = r.condition_id
+
+CREATE TABLE IF NOT EXISTS maker_markouts (
+  ts TIMESTAMP,
+  condition_id SYMBOL CAPACITY 4096 NOCACHE,
+  jev_ts TIMESTAMP,
+  side SYMBOL CAPACITY 8,
+  price DOUBLE,
+  size DOUBLE,
+  mid_1s DOUBLE,
+  mid_5s DOUBLE,
+  mid_30s DOUBLE,
+  pnl_1s_pp DOUBLE,
+  pnl_5s_pp DOUBLE,
+  pnl_30s_pp DOUBLE
+) TIMESTAMP(ts) PARTITION BY DAY;
