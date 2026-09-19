@@ -1,0 +1,7 @@
+# jevTrader local build tuning (2026-09-19).
+# The dev machine OOM-kills on default parallelism: 16 parallel rustc on this
+# workspace spikes past available RAM, especially while rust-analyzer runs its
+# own `cargo check` concurrently. 4 jobs keeps full builds safely in budget;
+# raise only if RAM headroom grows. Delete this file to restore cargo defaults.
+[build]
+jobs = 4
