@@ -3,7 +3,28 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use crate::{domain::Trigger, jev::V1Signal};
 use questdb::ingress::{Buffer, ProtocolVersion, Sender, TimestampMicros};
+use serde::{Deserialize, Serialize};
+
+/// Shadow-evaluation branch persisted alongside storage events.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Variant {
+    #[serde(rename = "CONTROL")]
+    Control,
+    #[serde(rename = "QUANT_V1")]
+    QuantV1,
+}
+
+impl Variant {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Control => "CONTROL",
+            Self::QuantV1 => "QUANT_V1",
+        }
+    }
+}
 use tokio::{sync::mpsc, task::JoinHandle};
 
 /// A row destined for one of the QuestDB tables defined in `questdb/schema.sql`.
@@ -75,26 +96,46 @@ pub enum StorageEvent {
         published_minutes_ago: i64,
         dedup_hash: String,
     },
-    /// One Jev call, including the exact state that produced its signal.
+    /// One V1 Jev call, including the exact state that produced its signal.
+    ///
+    /// The `tokens_in` and `tokens_out` fields are retained for the eventual
+    /// Jev usage payload, but remain zero until the client measures usage.
     JevSignal {
         ts: i64,
         condition_id: String,
+        state_seq: i64,
         state_hash: String,
         state_json: String,
         questions_json: String,
-        likely_yes: f64,
-        underpriced: f64,
-        resolution_risk: f64,
-        resolution_risk_conf: f64,
+        yes_pressure_5s: f64,
+        no_pressure_5s: f64,
+        move_persists: f64,
+        underreact_up: f64,
+        underreact_down: f64,
+        repricing_up_3_plus: f64,
+        repricing_up_2: f64,
+        repricing_up_1: f64,
+        repricing_flat: f64,
+        repricing_down_1: f64,
+        repricing_down_2: f64,
+        repricing_down_3_plus: f64,
+        repricing_confidence: f64,
+        fill_before_decay: f64,
+        fill_toxic: f64,
         latency_ms: i64,
         tokens_in: i64,
         tokens_out: i64,
         trigger: String,
+        variant: Variant,
     },
     /// A paper-trading decision linked to its Jev signal timestamp.
+    ///
+    /// V1 uses `QUOTE` for a decision returned by `decide_quote` and `SKIP`
+    /// otherwise; `TRADE` is not part of the V1 paper vocabulary.
     PaperDecision {
         ts: i64,
         condition_id: String,
+        variant: Variant,
         jev_ts: i64,
         edge: f64,
         threshold: f64,
@@ -110,21 +151,76 @@ pub enum StorageEvent {
         winning_outcome: String,
         resolved_ts: i64,
     },
-    /// Maker markouts at the three configured horizons.
+    /// Maker markouts at the five V1 horizons: +1/+5/+10/+30/+60s.
     MakerMarkout {
         ts: i64,
         condition_id: String,
+        variant: Variant,
         jev_ts: i64,
         side: String,
         price: f64,
         size: f64,
         mid_1s: f64,
         mid_5s: f64,
+        mid_10s: f64,
         mid_30s: f64,
+        mid_60s: f64,
         pnl_1s_pp: f64,
         pnl_5s_pp: f64,
+        pnl_10s_pp: f64,
         pnl_30s_pp: f64,
+        pnl_60s_pp: f64,
     },
+}
+
+impl StorageEvent {
+    /// Build a V1 Jev signal row from a validated signal and its state identity.
+    ///
+    /// The Jev client currently does not expose usage, so this helper stores
+    /// `tokens_in` and `tokens_out` as zero until the client measures them.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn jev_signal(
+        ts: i64,
+        condition_id: impl Into<String>,
+        state_hash: impl Into<String>,
+        state_json: impl Into<String>,
+        questions_json: impl Into<String>,
+        state_seq: i64,
+        latency_ms: i64,
+        trigger: Trigger,
+        variant: Variant,
+        signal: &V1Signal,
+    ) -> Self {
+        Self::JevSignal {
+            ts,
+            condition_id: condition_id.into(),
+            state_seq,
+            state_hash: state_hash.into(),
+            state_json: state_json.into(),
+            questions_json: questions_json.into(),
+            yes_pressure_5s: signal.yes_pressure_5s,
+            no_pressure_5s: signal.no_pressure_5s,
+            move_persists: signal.move_persists,
+            underreact_up: signal.underreact_up,
+            underreact_down: signal.underreact_down,
+            repricing_up_3_plus: signal.repricing.up_3_plus,
+            repricing_up_2: signal.repricing.up_2,
+            repricing_up_1: signal.repricing.up_1,
+            repricing_flat: signal.repricing.flat,
+            repricing_down_1: signal.repricing.down_1,
+            repricing_down_2: signal.repricing.down_2,
+            repricing_down_3_plus: signal.repricing.down_3_plus,
+            repricing_confidence: signal.repricing_confidence,
+            fill_before_decay: signal.fill_before_decay,
+            fill_toxic: signal.fill_toxic,
+            latency_ms,
+            tokens_in: 0,
+            tokens_out: 0,
+            trigger: trigger.as_str().to_owned(),
+            variant,
+        }
+    }
 }
 
 /// A snapshot of the writer counters.
@@ -399,29 +495,55 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
         StorageEvent::JevSignal {
             ts,
             condition_id,
+            state_seq,
             state_hash,
             state_json,
             questions_json,
-            likely_yes,
-            underpriced,
-            resolution_risk,
-            resolution_risk_conf,
+            yes_pressure_5s,
+            no_pressure_5s,
+            move_persists,
+            underreact_up,
+            underreact_down,
+            repricing_up_3_plus,
+            repricing_up_2,
+            repricing_up_1,
+            repricing_flat,
+            repricing_down_1,
+            repricing_down_2,
+            repricing_down_3_plus,
+            repricing_confidence,
+            fill_before_decay,
+            fill_toxic,
             latency_ms,
             tokens_in,
             tokens_out,
             trigger,
+            variant,
         } => {
             buffer
                 .table("jev_signals")?
                 .symbol("condition_id", condition_id)?
                 .symbol("trigger", trigger)?
+                .symbol("variant", variant.as_str())?
+                .column_i64("state_seq", *state_seq)?
                 .column_str("state_hash", state_hash)?
                 .column_str("state_json", state_json)?
                 .column_str("questions_json", questions_json)?
-                .column_f64("likely_yes", *likely_yes)?
-                .column_f64("underpriced", *underpriced)?
-                .column_f64("resolution_risk", *resolution_risk)?
-                .column_f64("resolution_risk_conf", *resolution_risk_conf)?
+                .column_f64("yes_pressure_5s", *yes_pressure_5s)?
+                .column_f64("no_pressure_5s", *no_pressure_5s)?
+                .column_f64("move_persists", *move_persists)?
+                .column_f64("underreact_up", *underreact_up)?
+                .column_f64("underreact_down", *underreact_down)?
+                .column_f64("repricing_up_3_plus", *repricing_up_3_plus)?
+                .column_f64("repricing_up_2", *repricing_up_2)?
+                .column_f64("repricing_up_1", *repricing_up_1)?
+                .column_f64("repricing_flat", *repricing_flat)?
+                .column_f64("repricing_down_1", *repricing_down_1)?
+                .column_f64("repricing_down_2", *repricing_down_2)?
+                .column_f64("repricing_down_3_plus", *repricing_down_3_plus)?
+                .column_f64("repricing_confidence", *repricing_confidence)?
+                .column_f64("fill_before_decay", *fill_before_decay)?
+                .column_f64("fill_toxic", *fill_toxic)?
                 .column_i64("latency_ms", *latency_ms)?
                 .column_i64("tokens_in", *tokens_in)?
                 .column_i64("tokens_out", *tokens_out)?
@@ -430,6 +552,7 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
         StorageEvent::PaperDecision {
             ts,
             condition_id,
+            variant,
             jev_ts,
             edge,
             threshold,
@@ -442,6 +565,7 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
                 .table("paper_decisions")?
                 .symbol("condition_id", condition_id)?
                 .symbol("decision", decision)?
+                .symbol("variant", variant.as_str())?
                 .column_ts("jev_ts", TimestampMicros::new(*jev_ts))?
                 .column_f64("edge", *edge)?
                 .column_f64("threshold", *threshold)?
@@ -466,30 +590,40 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
         StorageEvent::MakerMarkout {
             ts,
             condition_id,
+            variant,
             jev_ts,
             side,
             price,
             size,
             mid_1s,
             mid_5s,
+            mid_10s,
             mid_30s,
+            mid_60s,
             pnl_1s_pp,
             pnl_5s_pp,
+            pnl_10s_pp,
             pnl_30s_pp,
+            pnl_60s_pp,
         } => {
             buffer
                 .table("maker_markouts")?
                 .symbol("condition_id", condition_id)?
                 .symbol("side", side)?
+                .symbol("variant", variant.as_str())?
                 .column_ts("jev_ts", TimestampMicros::new(*jev_ts))?
                 .column_f64("price", *price)?
                 .column_f64("size", *size)?
                 .column_f64("mid_1s", *mid_1s)?
                 .column_f64("mid_5s", *mid_5s)?
+                .column_f64("mid_10s", *mid_10s)?
                 .column_f64("mid_30s", *mid_30s)?
+                .column_f64("mid_60s", *mid_60s)?
                 .column_f64("pnl_1s_pp", *pnl_1s_pp)?
                 .column_f64("pnl_5s_pp", *pnl_5s_pp)?
+                .column_f64("pnl_10s_pp", *pnl_10s_pp)?
                 .column_f64("pnl_30s_pp", *pnl_30s_pp)?
+                .column_f64("pnl_60s_pp", *pnl_60s_pp)?
                 .at(TimestampMicros::new(*ts))?;
         }
     }
@@ -501,7 +635,11 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
 mod tests {
     use std::{sync::mpsc as std_mpsc, thread, time::Duration};
 
-    use super::{MetricsInner, QuestDbHandle, StorageEvent, StorageSendResult, build_row};
+    use super::{MetricsInner, QuestDbHandle, StorageEvent, StorageSendResult, Variant, build_row};
+    use crate::{
+        domain::Trigger,
+        jev::{TickDistribution, V1Signal},
+    };
     use tokio::sync::mpsc;
 
     fn row_text(event: &StorageEvent) -> String {
@@ -535,24 +673,41 @@ mod tests {
     }
 
     #[test]
-    fn jev_signals_preserve_the_full_state_and_questions_json() {
-        let row = row_text(&StorageEvent::JevSignal {
-            ts: 2_000_000,
-            condition_id: "condition-2".to_owned(),
-            state_hash: "state-hash".to_owned(),
-            state_json: r#"{"market":{"question":"BTC above 100k"}}"#.to_owned(),
-            questions_json: r#"{"likely_yes":{"type":"noul"}}"#.to_owned(),
-            likely_yes: 0.8,
-            underpriced: 0.7,
-            resolution_risk: 0.1,
-            resolution_risk_conf: 0.9,
-            latency_ms: 101,
-            tokens_in: 200,
-            tokens_out: 40,
-            trigger: "book_move".to_owned(),
-        });
+    fn jev_signals_map_v1_columns_and_preserve_the_full_state() {
+        let signal = V1Signal {
+            yes_pressure_5s: 0.81,
+            no_pressure_5s: 0.12,
+            move_persists: 0.73,
+            underreact_up: 0.88,
+            underreact_down: 0.18,
+            repricing: TickDistribution {
+                up_3_plus: 0.10,
+                up_2: 0.20,
+                up_1: 0.44,
+                flat: 0.12,
+                down_1: 0.07,
+                down_2: 0.04,
+                down_3_plus: 0.03,
+            },
+            repricing_confidence: 0.79,
+            fill_before_decay: 0.66,
+            fill_toxic: 0.21,
+        };
+        let row = row_text(&StorageEvent::jev_signal(
+            2_000_000,
+            "condition-2",
+            "state-hash",
+            r#"{"market":{"question":"BTC above 100k"}}"#,
+            r#"{"yes_pressure_5s":{"type":"noul"}}"#,
+            17,
+            101,
+            Trigger::PriceMove,
+            Variant::QuantV1,
+            &signal,
+        ));
 
         assert!(row.starts_with("jev_signals,condition_id=condition-2"));
+        assert!(row.contains("state_seq=17i"));
         assert!(row.contains("state_hash=\"state-hash\""));
         assert!(
             row.contains(
@@ -560,13 +715,34 @@ mod tests {
             )
         );
         assert!(
-            row.contains("questions_json=\"{\\\"likely_yes\\\":{\\\"type\\\":\\\"noul\\\"}}\"")
+            row.contains(
+                "questions_json=\"{\\\"yes_pressure_5s\\\":{\\\"type\\\":\\\"noul\\\"}}\""
+            )
         );
-        assert!(row.contains("likely_yes=0.8"));
-        assert!(row.contains("resolution_risk_conf=0.9"));
-        assert!(row.contains("tokens_in=200"));
-        assert!(row.contains("tokens_out=40"));
-        assert!(row.contains("trigger=book_move"));
+        for field in [
+            "yes_pressure_5s=0.81",
+            "no_pressure_5s=0.12",
+            "move_persists=0.73",
+            "underreact_up=0.88",
+            "underreact_down=0.18",
+            "repricing_up_3_plus=0.1",
+            "repricing_up_2=0.2",
+            "repricing_up_1=0.44",
+            "repricing_flat=0.12",
+            "repricing_down_1=0.07",
+            "repricing_down_2=0.04",
+            "repricing_down_3_plus=0.03",
+            "repricing_confidence=0.79",
+            "fill_before_decay=0.66",
+            "fill_toxic=0.21",
+            "latency_ms=101i",
+            "tokens_in=0i",
+            "tokens_out=0i",
+            "trigger=price_move",
+        ] {
+            assert!(row.contains(field), "missing {field} in {row}");
+        }
+        assert!(row.contains("variant=QUANT_V1"));
     }
 
     #[test]
@@ -574,28 +750,38 @@ mod tests {
         let row = row_text(&StorageEvent::MakerMarkout {
             ts: 3_000_000,
             condition_id: "condition-3".to_owned(),
+            variant: Variant::Control,
             jev_ts: 2_900_000,
             side: "BUY".to_owned(),
             price: 0.4,
             size: 10.0,
             mid_1s: 0.41,
             mid_5s: 0.43,
+            mid_10s: 0.44,
             mid_30s: 0.45,
+            mid_60s: 0.46,
             pnl_1s_pp: 1.0,
             pnl_5s_pp: 3.0,
+            pnl_10s_pp: 4.0,
             pnl_30s_pp: 5.0,
+            pnl_60s_pp: 6.0,
         });
 
         assert!(row.starts_with("maker_markouts,condition_id=condition-3,side=BUY"));
+        assert!(row.contains("variant=CONTROL"));
         for field in [
             "price=0.4",
             "size=10",
             "mid_1s=0.41",
             "mid_5s=0.43",
+            "mid_10s=0.44",
             "mid_30s=0.45",
+            "mid_60s=0.46",
             "pnl_1s_pp=1",
             "pnl_5s_pp=3",
+            "pnl_10s_pp=4",
             "pnl_30s_pp=5",
+            "pnl_60s_pp=6",
         ] {
             assert!(row.contains(field), "missing {field} in {row}");
         }
