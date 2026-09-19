@@ -2,6 +2,8 @@ use std::env;
 
 use thiserror::Error;
 
+use crate::state::quant_features::{QuantParams, VolSource};
+
 /// Runtime configuration loaded once at application startup.
 #[derive(Clone)]
 pub struct AppConfig {
@@ -10,6 +12,7 @@ pub struct AppConfig {
     pub questdb_http_url: String,
     pub questdb_ilp_addr: String,
     pub quote_thresholds: QuoteThresholds,
+    pub quant: QuantConfig,
 }
 
 /// Thresholds for the pure lead-lag quote rule.
@@ -62,6 +65,25 @@ impl QuoteThresholds {
 }
 
 #[derive(Debug, Error)]
+/// Feature-gated quantitative enrichment settings.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct QuantConfig {
+    pub enabled: bool,
+    pub params: QuantParams,
+}
+
+impl QuantConfig {
+    pub fn validate(self) -> Result<(), ConfigError> {
+        if !(self.params.min_vol_pct.is_finite() && self.params.min_vol_pct > 0.0) {
+            return Err(ConfigError::ThresholdOutOfRange {
+                name: "QUANT_MIN_VOL_PCT",
+                value: self.params.min_vol_pct,
+            });
+        }
+        Ok(())
+    }
+}
+
 pub enum ConfigError {
     #[error("missing required environment variable `{0}`")]
     MissingEnvironmentVariable(&'static str),
@@ -73,6 +95,12 @@ pub enum ConfigError {
     InvalidThreshold { name: &'static str, value: String },
     #[error("threshold `{name}` must be in (0, 1), got {value}")]
     ThresholdOutOfRange { name: &'static str, value: f64 },
+    #[error(
+        "invalid boolean flag `{name}` value `{value}` (expected 0/1, true/false, yes/no, on/off)"
+    )]
+    InvalidFlag { name: &'static str, value: String },
+    #[error("invalid vol source `{name}` value `{value}` (expected short_1m or long_5m)")]
+    InvalidVolSource { name: &'static str, value: String },
 }
 
 impl AppConfig {
@@ -95,12 +123,27 @@ impl AppConfig {
         };
         quote_thresholds.validate()?;
 
+        let defaults = QuantConfig::default();
+        let quant = QuantConfig {
+            enabled: optional_bool("QUANT_FEATURES_ENABLED", defaults.enabled)?,
+            params: QuantParams {
+                min_vol_pct: optional_f64("QUANT_MIN_VOL_PCT", defaults.params.min_vol_pct)?,
+                vol_source: optional_vol_source("QUANT_Z_VOL_SOURCE", defaults.params.vol_source)?,
+                horizon_scaling: optional_bool(
+                    "QUANT_HORIZON_SCALING",
+                    defaults.params.horizon_scaling,
+                )?,
+            },
+        };
+        quant.validate()?;
+
         Ok(Self {
             typesafe_api_key: required_environment_variable("TYPESAFE_API_KEY")?,
             polymarket_private_key: required_environment_variable("POLYMARKET_PRIVATE_KEY")?,
             questdb_http_url: required_environment_variable("QUESTDB_HTTP_URL")?,
             questdb_ilp_addr: required_environment_variable("QUESTDB_ILP_ADDR")?,
             quote_thresholds,
+            quant,
         })
     }
 }
@@ -126,7 +169,24 @@ mod tests {
     }
 
     #[test]
-    fn boundary_thresholds_rejected() {
+    fn boundary_thresholds_rejected() {    #[test]
+    fn default_quant_is_disabled_and_valid() {
+        let quant = QuantConfig::default();
+
+        assert!(!quant.enabled);
+        assert!(quant.params.horizon_scaling);
+        assert_eq!(quant.params.vol_source, VolSource::Short);
+        assert_eq!(quant.params, QuantParams::default());
+        quant
+            .validate()
+            .expect("documented quant defaults must be valid");
+
+        let mut zero_floor = quant;
+        zero_floor.params.min_vol_pct = 0.0;
+        assert!(zero_floor.validate().is_err());
+    }
+
+
         for bad in [0.0, 1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let candidate = QuoteThresholds {
                 under_min: bad,
@@ -145,6 +205,40 @@ fn optional_threshold(name: &'static str, default: f64) -> Result<f64, ConfigErr
         Ok(value) => value
             .parse::<f64>()
             .map_err(|_| ConfigError::InvalidThreshold { name, value }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
+    }
+}
+#[allow(clippy::items_after_test_module)]
+fn optional_bool(name: &'static str, default: bool) -> Result<bool, ConfigError> {
+    match env::var(name) {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            _ => Err(ConfigError::InvalidFlag { name, value }),
+        },
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
+    }
+}
+
+#[allow(clippy::items_after_test_module)]
+fn optional_f64(name: &'static str, default: f64) -> Result<f64, ConfigError> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<f64>()
+            .map_err(|_| ConfigError::InvalidThreshold { name, value }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
+    }
+}
+
+#[allow(clippy::items_after_test_module)]
+fn optional_vol_source(name: &'static str, default: VolSource) -> Result<VolSource, ConfigError> {
+    match env::var(name) {
+        Ok(value) => {
+            VolSource::parse_env(&value).ok_or(ConfigError::InvalidVolSource { name, value })
+        }
         Err(env::VarError::NotPresent) => Ok(default),
         Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
     }
