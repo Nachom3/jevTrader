@@ -1,6 +1,7 @@
 //! Typed System One request contracts for the Jev Lead-Lag V1 strategy.
 
 use crate::strategy::lead_lag::{LeadLagFeatures, PolySnapshot};
+use crate::state::quant_features::QuantFeatures;
 use serde::Serialize;
 
 /// System One model used by the V1 strategy.
@@ -41,6 +42,10 @@ pub struct V1State {
     pub market: MarketContext,
     pub underlying: LeadLagFeatures,
     pub polymarket: PolySnapshot,
+    /// RustQuant enrichment, or `None` when the quant flag is off. The eight
+    /// Jev questions are identical in both cases by design (clean A/B):
+    /// `quant: null` vs `quant: {...}` is the only state difference.
+    pub quant: Option<QuantFeatures>,
     pub candidate_order: CandidateOrder,
 }
 
@@ -51,6 +56,7 @@ impl V1State {
         resolution_rules: impl Into<String>,
         features: LeadLagFeatures,
         poly: PolySnapshot,
+        quant: Option<QuantFeatures>,
         candidate_buy_price: f64,
     ) -> Self {
         Self {
@@ -60,6 +66,7 @@ impl V1State {
             },
             underlying: features,
             polymarket: poly,
+            quant,
             candidate_order: CandidateOrder {
                 side: OrderSide::BuyYesMaker,
                 price: candidate_buy_price,
@@ -75,6 +82,7 @@ pub fn v1_state(
     resolution_rules: &str,
     features: &LeadLagFeatures,
     poly: &PolySnapshot,
+    quant: Option<QuantFeatures>,
     candidate_buy_price: f64,
 ) -> V1State {
     V1State::new(
@@ -82,6 +90,7 @@ pub fn v1_state(
         resolution_rules,
         features.clone(),
         poly.clone(),
+        quant,
         candidate_buy_price,
     )
 }
@@ -263,5 +272,74 @@ mod tests {
             json!("choice")
         );
         assert!(value["questions"]["repricing_ticks"]["criteria"].is_object());
+    }
+
+    #[test]
+    fn quant_block_serializes_null_or_object() {
+        use crate::state::quant_features::{QuantParams, build_quant};
+
+        let features = LeadLagFeatures {
+            target: 120_000.0,
+            time_remaining_secs: 900,
+            resolution_source: "Official source".to_owned(),
+            spot: 119_000.0,
+            distance_to_target_pct: -0.833,
+            ret_250ms_pct: 0.0,
+            ret_1s_pct: 0.02,
+            ret_5s_pct: 0.0,
+            ret_30s_pct: 0.0,
+            ret_5m_pct: 0.0,
+            realized_vol_1m_pct: 0.01,
+            realized_vol_5m_pct: 0.005,
+            binance_microprice: 119_000.0,
+            coinbase_microprice: 119_000.0,
+            perp_price: 119_000.0,
+            perp_basis_pct: 0.0,
+            buy_vol_1s: 0.0,
+            sell_vol_1s: 0.0,
+            ofi_1s: 0.0,
+            ofi_5s: 0.0,
+            book_imbalance: 0.0,
+            aggressive_buy_ratio: 0.0,
+            binance_coinbase_diff_pct: 0.0,
+            spot_perp_diff_pct: 0.0,
+        };
+        let poly = PolySnapshot {
+            yes_bid: 0.43,
+            yes_ask: 0.45,
+            bid_depth: 100.0,
+            ask_depth: 100.0,
+            spread: 0.02,
+            book_imbalance: 0.0,
+            last_trade_price: 0.44,
+            price_1s_ago: 0.44,
+            price_5s_ago: 0.43,
+            price_30s_ago: 0.42,
+        };
+        let off = V1State::new(
+            "Will BTC reach the target?",
+            "Official rules.",
+            features.clone(),
+            poly.clone(),
+            None,
+            0.44,
+        );
+        let off_value = serde_json::to_value(off).expect("state should serialize");
+        assert!(off_value["quant"].is_null());
+
+        let quant = build_quant(&features, &QuantParams::default());
+        let on = V1State::new(
+            "Will BTC reach the target?",
+            "Official rules.",
+            features,
+            poly,
+            Some(quant),
+            0.44,
+        );
+        let on_value = serde_json::to_value(on).expect("state should serialize");
+        assert_eq!(on_value["quant"]["baseline_model"], "zero_drift_lognormal");
+        assert_eq!(on_value["quant"]["z_vol_source"], "short_1m");
+        assert!(on_value["quant"]["quant_baseline_p_yes"].is_number());
+        assert_eq!(on_value["underlying"]["spot"], 119_000.0);
     }
 }
