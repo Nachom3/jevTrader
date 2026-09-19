@@ -41,3 +41,7 @@ harness = false
 [[bench]]
 name = "orderbook"
 harness = false
+
+[[bench]]
+name = "strategy"
+harness = false

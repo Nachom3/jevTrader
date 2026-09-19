@@ -1,5 +1,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use jevtrader::state::{ExternalTick, OrderFlowAggregates, VenueMicroprices, build_features};
+use jevtrader::domain::PriceTicks;
+use jevtrader::state::{
+    ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices, build_features,
+};
 use jevtrader::strategy::lead_lag::PolySnapshot;
 use std::hint::black_box;
 
@@ -17,16 +20,16 @@ fn five_minute_ticks() -> Vec<ExternalTick> {
 
 fn poly_snapshot() -> PolySnapshot {
     PolySnapshot {
-        yes_bid: 0.40,
-        yes_ask: 0.42,
+        yes_bid: PriceTicks::from_f64(0.40),
+        yes_ask: PriceTicks::from_f64(0.42),
         bid_depth: 100.0,
         ask_depth: 90.0,
         spread: 0.02,
         book_imbalance: 0.05,
-        last_trade_price: 0.41,
-        price_1s_ago: 0.40,
-        price_5s_ago: 0.39,
-        price_30s_ago: 0.38,
+        last_trade_price: PriceTicks::from_f64(0.41),
+        price_1s_ago: PriceTicks::from_f64(0.40),
+        price_5s_ago: PriceTicks::from_f64(0.39),
+        price_30s_ago: PriceTicks::from_f64(0.38),
     }
 }
 
@@ -53,7 +56,7 @@ fn benchmark_feature_builder(c: &mut Criterion) {
             black_box(build_features(
                 black_box(&ticks),
                 black_box(&poly),
-                black_box(105.0),
+                black_box(ResolutionContext::new(105.0, 900, "Benchmark source")),
                 black_box(venues),
                 black_box(order_flow),
             ))
