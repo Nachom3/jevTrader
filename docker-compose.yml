@@ -1,27 +1,17 @@
 ---
-# Local infra: QuestDB (time-series) + Postgres (relational).
+# Local infra: QuestDB only (time-series). Postgres removed: V1 uses
+# QuestDB for all temporal data; no relational store in scope (2026-09-18).
 # Usage: docker compose up -d
 services:
   questdb:
     image: questdb/questdb:latest
     ports:
-      - "9000:9000"  # HTTP / console / ILP-over-HTTP
+      # HTTP / console (host 9000 taken by minio, use :9002)
+      - "9002:9000"
       - "8812:8812"  # Postgres wire protocol
       - "9009:9009"  # ILP over TCP (questdb-rs ingest)
     volumes:
       - questdb_data:/var/lib/questdb
 
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: jevtrader
-      POSTGRES_PASSWORD: jevtrader
-      POSTGRES_DB: jevtrader
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
 volumes:
   questdb_data:
-  pgdata:
