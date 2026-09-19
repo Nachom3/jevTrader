@@ -5,7 +5,7 @@
 //! Feature / State Builder; only the builder output ever reaches Jev.
 //! Every Jev call is persisted as [`JevSignal`] with its exact state JSON.
 
-use jevtrader::domain::{Decision, TradeSide, Trigger};
+use jevtrader::domain::{Decision, PriceTicks, TradeSide, Trigger};
 use serde::{Deserialize, Serialize};
 
 /// Hot in-RAM state for one market, rebuilt on every relevant WS event.
@@ -29,12 +29,16 @@ pub struct MarketState {
     pub enable_order_book: bool,
     pub neg_risk: bool,
     // -- YES microstructure (executable side) --
-    pub yes_bid: f64,
-    pub yes_ask: f64,
-    pub yes_mid: f64,
+    #[serde(with = "crate::strategy::lead_lag::price_ticks_serde")]
+    pub yes_bid: PriceTicks,
+    #[serde(with = "crate::strategy::lead_lag::price_ticks_serde")]
+    pub yes_ask: PriceTicks,
+    #[serde(with = "crate::strategy::lead_lag::price_ticks_serde")]
+    pub yes_mid: PriceTicks,
     pub yes_spread: f64,
     pub book_hash: String,
-    pub last_trade_price: f64,
+    #[serde(with = "crate::strategy::lead_lag::price_ticks_serde")]
+    pub last_trade_price: PriceTicks,
     pub last_trade_side: TradeSide,
     // -- Gamma aggregates --
     pub volume_24h: f64,

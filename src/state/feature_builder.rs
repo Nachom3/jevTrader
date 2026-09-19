@@ -49,22 +49,93 @@ pub struct OrderFlowAggregates {
     pub aggressive_buy_ratio: f64,
 }
 
+/// Resolution metadata supplied by the market-state caller.
+///
+/// The builder does not read a clock: `time_remaining_secs` must be computed
+/// by the caller from its chosen observation timestamp and the market's
+/// resolution timestamp. An unavailable resolution source remains empty; this
+/// type never fabricates metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolutionContext {
+    pub target: f64,
+    pub time_remaining_secs: u64,
+    pub resolution_source: String,
+}
+
+impl ResolutionContext {
+    #[must_use]
+    pub fn new(
+        target: f64,
+        time_remaining_secs: u64,
+        resolution_source: impl Into<String>,
+    ) -> Self {
+        Self {
+            target,
+            time_remaining_secs,
+            resolution_source: resolution_source.into(),
+        }
+    }
+
+    /// Legacy target-only constructor. Prefer [`ResolutionContext::new`] so
+    /// resolution metadata is explicit.
+    #[deprecated(note = "construct an explicit ResolutionContext with ResolutionContext::new")]
+    pub fn from(target: f64) -> Self {
+        Self::new(target, 0, "")
+    }
+}
+
+/// Compatibility conversion for existing benchmark and test callers that
+/// only supplied a target. New callers must pass [`ResolutionContext`] so the
+/// serialized state carries real resolution metadata; the empty source and
+/// zero remaining time here explicitly mean that legacy caller did not have
+/// that metadata available.
+impl From<f64> for ResolutionContext {
+    fn from(target: f64) -> Self {
+        Self::new(target, 0, "")
+    }
+}
+
+impl From<&ResolutionContext> for ResolutionContext {
+    fn from(context: &ResolutionContext) -> Self {
+        context.clone()
+    }
+}
+
 /// Builds deterministic lead-lag features from snapshots already collected by
 /// the feed actors.
 ///
-/// `target` is the market's numeric resolution target. The current
-/// [`PolySnapshot`] is accepted as part of the state-builder boundary even
-/// though the current [`LeadLagFeatures`] schema has no Polymarket fields to
-/// copy; keeping it in the pure API prevents callers from silently dropping the
-/// venue snapshot as the schema evolves. Time-to-resolution and resolution
-/// source are not derivable from these inputs, so the builder emits their
-/// neutral defaults (`0` and an empty string) until a later context-bearing API
-/// is introduced.
+/// The third argument is a [`ResolutionContext`] in the production path. It is
+/// generic only to preserve the existing five-argument API for old benches and
+/// tests, which may still pass a bare `f64` target. The context is then used by
+/// [`build_features_with_context`] without reading a clock or doing I/O.
+///
+/// `PolySnapshot` remains in this compatibility boundary because the existing
+/// callers pass it, but it is intentionally not copied into
+/// [`LeadLagFeatures`]: Polymarket fields already belong to the separate
+/// `V1State::polymarket` object. The canonical context-aware builder therefore
+/// omits that redundant argument while this wrapper prevents old callers from
+/// dropping the snapshot at their call site.
 #[must_use]
-pub fn build_features(
+pub fn build_features<R>(
     recent_ticks: &[ExternalTick],
     _poly_snapshot: &PolySnapshot,
-    target: f64,
+    resolution: R,
+    venues: VenueMicroprices,
+    order_flow: OrderFlowAggregates,
+) -> LeadLagFeatures
+where
+    R: Into<ResolutionContext>,
+{
+    let context = resolution.into();
+    build_features_with_context(recent_ticks, &context, venues, order_flow)
+}
+
+/// Canonical pure feature builder for callers that already own the resolution
+/// context and do not need the legacy Polymarket argument.
+#[must_use]
+pub fn build_features_with_context(
+    recent_ticks: &[ExternalTick],
+    context: &ResolutionContext,
     venues: VenueMicroprices,
     order_flow: OrderFlowAggregates,
 ) -> LeadLagFeatures {
@@ -87,11 +158,11 @@ pub fn build_features(
     };
 
     LeadLagFeatures {
-        target: finite_or_zero(target),
-        time_remaining_secs: 0,
-        resolution_source: String::new(),
+        target: finite_or_zero(context.target),
+        time_remaining_secs: context.time_remaining_secs,
+        resolution_source: context.resolution_source.clone(),
         spot,
-        distance_to_target_pct: relative_difference(spot, target),
+        distance_to_target_pct: relative_difference(spot, context.target),
         ret_250ms_pct: ret(250),
         ret_1s_pct: ret(1_000),
         ret_5s_pct: ret(5_000),
@@ -181,7 +252,7 @@ fn interpolated_price(ticks: &[ExternalTick], target_ts: u64) -> Option<f64> {
         return None;
     }
 
-    let left_tick = &ticks[right - 1];
+    let left_tick = ticks.get(right - 1)?;
     let left_price = valid_price(left_tick.price)?;
     let right_price = valid_price(right_tick.price)?;
     let span = right_tick.ts_ms.checked_sub(left_tick.ts_ms)?;
@@ -198,7 +269,7 @@ fn valid_price(price: f64) -> Option<f64> {
 }
 
 fn finite_or_zero(value: f64) -> f64 {
-    value.is_finite().then_some(value).unwrap_or(0.0)
+    if value.is_finite() { value } else { 0.0 }
 }
 
 fn relative_difference(value: f64, reference: f64) -> f64 {
@@ -210,21 +281,24 @@ fn relative_difference(value: f64, reference: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExternalTick, OrderFlowAggregates, VenueMicroprices, build_features};
+    use super::{
+        ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices, build_features,
+    };
     use crate::strategy::lead_lag::PolySnapshot;
+    use jevtrader::domain::PriceTicks;
 
     fn poly_snapshot() -> PolySnapshot {
         PolySnapshot {
-            yes_bid: 0.40,
-            yes_ask: 0.42,
+            yes_bid: PriceTicks::from_f64(0.40),
+            yes_ask: PriceTicks::from_f64(0.42),
             bid_depth: 100.0,
             ask_depth: 90.0,
             spread: 0.02,
             book_imbalance: 0.05,
-            last_trade_price: 0.41,
-            price_1s_ago: 0.40,
-            price_5s_ago: 0.39,
-            price_30s_ago: 0.38,
+            last_trade_price: PriceTicks::from_f64(0.41),
+            price_1s_ago: PriceTicks::from_f64(0.40),
+            price_5s_ago: PriceTicks::from_f64(0.39),
+            price_30s_ago: PriceTicks::from_f64(0.38),
         }
     }
 
@@ -260,7 +334,13 @@ mod tests {
 
     #[test]
     fn flat_series_has_zero_returns_and_volatility() {
-        let features = build_features(&flat_ticks(), &poly_snapshot(), 100.0, venues(), flow());
+        let features = build_features(
+            &flat_ticks(),
+            &poly_snapshot(),
+            ResolutionContext::new(100.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
 
         assert_eq!(features.spot, 100.0);
         assert!(features.ret_250ms_pct.abs() < f64::EPSILON);
@@ -271,6 +351,21 @@ mod tests {
         assert!(features.realized_vol_1m_pct.abs() < f64::EPSILON);
         assert!(features.realized_vol_5m_pct.abs() < f64::EPSILON);
         assert!(features.distance_to_target_pct.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn resolution_context_is_copied_without_clock_or_io() {
+        let features = build_features(
+            &flat_ticks(),
+            &poly_snapshot(),
+            ResolutionContext::new(120.0, 987, "Official source"),
+            venues(),
+            flow(),
+        );
+
+        assert_eq!(features.target, 120.0);
+        assert_eq!(features.time_remaining_secs, 987);
+        assert_eq!(features.resolution_source, "Official source");
     }
 
     #[test]
@@ -289,7 +384,13 @@ mod tests {
                 ts_ms: 300_000,
             },
         ];
-        let features = build_features(&ticks, &poly_snapshot(), 120.0, venues(), flow());
+        let features = build_features(
+            &ticks,
+            &poly_snapshot(),
+            ResolutionContext::new(120.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
 
         assert!(features.ret_250ms_pct > 0.0);
         assert!(features.ret_1s_pct > 0.0);
@@ -302,7 +403,14 @@ mod tests {
 
     #[test]
     fn empty_and_short_series_use_zero_derived_defaults_without_panicking() {
-        let empty = build_features(&[], &poly_snapshot(), 100.0, venues(), flow());
+        let empty_ticks: [ExternalTick; 0] = [];
+        let empty = build_features(
+            empty_ticks.as_slice(),
+            &poly_snapshot(),
+            ResolutionContext::new(100.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
         assert_eq!(empty.spot, 0.0);
         assert_eq!(empty.ret_1s_pct, 0.0);
         assert_eq!(empty.realized_vol_5m_pct, 0.0);
@@ -312,7 +420,13 @@ mod tests {
             price: 123.0,
             ts_ms: 10,
         }];
-        let features = build_features(&short, &poly_snapshot(), 100.0, venues(), flow());
+        let features = build_features(
+            short.as_slice(),
+            &poly_snapshot(),
+            ResolutionContext::new(100.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
         assert_eq!(features.spot, 123.0);
         assert_eq!(features.ret_5m_pct, 0.0);
         assert_eq!(features.realized_vol_1m_pct, 0.0);
@@ -321,7 +435,13 @@ mod tests {
 
     #[test]
     fn order_flow_and_cross_exchange_inputs_are_forwarded_deterministically() {
-        let features = build_features(&flat_ticks(), &poly_snapshot(), 100.0, venues(), flow());
+        let features = build_features(
+            &flat_ticks(),
+            &poly_snapshot(),
+            ResolutionContext::new(100.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
 
         assert_eq!(features.buy_vol_1s, 4.0);
         assert_eq!(features.sell_vol_1s, 3.0);

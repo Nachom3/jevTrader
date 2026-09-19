@@ -1,8 +1,7 @@
 use std::env;
 
-use thiserror::Error;
-
 use crate::state::quant_features::{QuantParams, VolSource};
+use thiserror::Error;
 
 /// Runtime configuration loaded once at application startup.
 #[derive(Clone)]
@@ -12,7 +11,69 @@ pub struct AppConfig {
     pub questdb_http_url: String,
     pub questdb_ilp_addr: String,
     pub quote_thresholds: QuoteThresholds,
+    pub freshness_policy: FreshnessPolicy,
     pub quant: QuantConfig,
+}
+
+/// Shared freshness limits for signal and execution decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreshnessPolicy {
+    /// Number of newer states a signal may lag behind.
+    pub max_lag: u64,
+    /// Maximum acceptable signal latency in milliseconds.
+    pub max_latency_ms: u64,
+}
+
+impl FreshnessPolicy {
+    /// Default sequence lag tolerance: two state updates.
+    pub const DEFAULT_MAX_LAG: u64 = 2;
+    /// Default latency limit: 1.5 seconds.
+    pub const DEFAULT_MAX_LATENCY_MS: u64 = 1_500;
+
+    /// Creates an explicit shared freshness policy.
+    #[must_use]
+    pub const fn new(max_lag: u64, max_latency_ms: u64) -> Self {
+        Self {
+            max_lag,
+            max_latency_ms,
+        }
+    }
+
+    /// Validates a freshness policy loaded from runtime configuration.
+    pub fn validate(self) -> Result<(), ConfigError> {
+        if self.max_latency_ms == 0 {
+            return Err(ConfigError::FreshnessLatencyOutOfRange {
+                name: "FRESHNESS_MAX_LATENCY_MS",
+                value: self.max_latency_ms,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for FreshnessPolicy {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_MAX_LAG, Self::DEFAULT_MAX_LATENCY_MS)
+    }
+}
+
+/// Feature-gated quantitative enrichment settings.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct QuantConfig {
+    pub enabled: bool,
+    pub params: QuantParams,
+}
+
+impl QuantConfig {
+    pub fn validate(self) -> Result<(), ConfigError> {
+        if !(self.params.min_vol_pct.is_finite() && self.params.min_vol_pct > 0.0) {
+            return Err(ConfigError::ThresholdOutOfRange {
+                name: "QUANT_MIN_VOL_PCT",
+                value: self.params.min_vol_pct,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Thresholds for the pure lead-lag quote rule.
@@ -65,25 +126,6 @@ impl QuoteThresholds {
 }
 
 #[derive(Debug, Error)]
-/// Feature-gated quantitative enrichment settings.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct QuantConfig {
-    pub enabled: bool,
-    pub params: QuantParams,
-}
-
-impl QuantConfig {
-    pub fn validate(self) -> Result<(), ConfigError> {
-        if !(self.params.min_vol_pct.is_finite() && self.params.min_vol_pct > 0.0) {
-            return Err(ConfigError::ThresholdOutOfRange {
-                name: "QUANT_MIN_VOL_PCT",
-                value: self.params.min_vol_pct,
-            });
-        }
-        Ok(())
-    }
-}
-
 pub enum ConfigError {
     #[error("missing required environment variable `{0}`")]
     MissingEnvironmentVariable(&'static str),
@@ -95,18 +137,24 @@ pub enum ConfigError {
     InvalidThreshold { name: &'static str, value: String },
     #[error("threshold `{name}` must be in (0, 1), got {value}")]
     ThresholdOutOfRange { name: &'static str, value: f64 },
+    #[error("invalid freshness setting `{name}` value `{value}`")]
+    InvalidFreshness { name: &'static str, value: String },
     #[error(
         "invalid boolean flag `{name}` value `{value}` (expected 0/1, true/false, yes/no, on/off)"
     )]
     InvalidFlag { name: &'static str, value: String },
     #[error("invalid vol source `{name}` value `{value}` (expected short_1m or long_5m)")]
     InvalidVolSource { name: &'static str, value: String },
+    #[error("freshness setting `{name}` must be greater than zero, got {value}")]
+    FreshnessLatencyOutOfRange { name: &'static str, value: u64 },
 }
 
 impl AppConfig {
-    /// Loads required credentials, endpoints, and optional quote thresholds.
+    /// Loads required credentials, endpoints, and optional strategy settings.
     ///
     /// `QUOTE_*` variables override the defaults from [`QuoteThresholds`].
+    /// `FRESHNESS_MAX_LAG` and `FRESHNESS_MAX_LATENCY_MS` override the shared
+    /// freshness defaults. `QUANT_*` controls the optional quant enrichment.
     /// The four credentials/endpoints are always required.
     pub fn load() -> Result<Self, ConfigError> {
         let _ = dotenvy::dotenv();
@@ -122,6 +170,13 @@ impl AppConfig {
             no_pressure_max: optional_threshold("QUOTE_NO_PRESSURE_MAX", defaults.no_pressure_max)?,
         };
         quote_thresholds.validate()?;
+
+        let defaults = FreshnessPolicy::default();
+        let freshness_policy = FreshnessPolicy {
+            max_lag: optional_u64("FRESHNESS_MAX_LAG", defaults.max_lag)?,
+            max_latency_ms: optional_u64("FRESHNESS_MAX_LATENCY_MS", defaults.max_latency_ms)?,
+        };
+        freshness_policy.validate()?;
 
         let defaults = QuantConfig::default();
         let quant = QuantConfig {
@@ -143,6 +198,7 @@ impl AppConfig {
             questdb_http_url: required_environment_variable("QUESTDB_HTTP_URL")?,
             questdb_ilp_addr: required_environment_variable("QUESTDB_ILP_ADDR")?,
             quote_thresholds,
+            freshness_policy,
             quant,
         })
     }
@@ -169,7 +225,36 @@ mod tests {
     }
 
     #[test]
-    fn boundary_thresholds_rejected() {    #[test]
+    fn boundary_thresholds_rejected() {
+        for bad in [0.0, 1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let candidate = QuoteThresholds {
+                under_min: bad,
+                ..QuoteThresholds::default()
+            };
+            assert!(
+                candidate.validate().is_err(),
+                "threshold must be rejected: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_freshness_policy_validate() {
+        let policy = FreshnessPolicy::default();
+
+        assert_eq!(policy.max_lag, 2);
+        assert_eq!(policy.max_latency_ms, 1_500);
+        policy
+            .validate()
+            .expect("documented freshness defaults must be valid");
+    }
+
+    #[test]
+    fn zero_freshness_latency_is_rejected() {
+        assert!(FreshnessPolicy::new(0, 0).validate().is_err());
+    }
+
+    #[test]
     fn default_quant_is_disabled_and_valid() {
         let quant = QuantConfig::default();
 
@@ -185,21 +270,11 @@ mod tests {
         zero_floor.params.min_vol_pct = 0.0;
         assert!(zero_floor.validate().is_err());
     }
-
-
-        for bad in [0.0, 1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let candidate = QuoteThresholds {
-                under_min: bad,
-                ..QuoteThresholds::default()
-            };
-            assert!(
-                candidate.validate().is_err(),
-                "threshold must be rejected: {bad}"
-            );
-        }
-    }
 }
 
+// Config helpers follow the test module by history; each carries its own
+// allow for clippy::items_after_test_module instead of churning the file.
+#[allow(clippy::items_after_test_module)]
 fn optional_threshold(name: &'static str, default: f64) -> Result<f64, ConfigError> {
     match env::var(name) {
         Ok(value) => value
@@ -209,6 +284,18 @@ fn optional_threshold(name: &'static str, default: f64) -> Result<f64, ConfigErr
         Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
     }
 }
+
+#[allow(clippy::items_after_test_module)]
+fn optional_u64(name: &'static str, default: u64) -> Result<u64, ConfigError> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| ConfigError::InvalidFreshness { name, value }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidEnvironmentVariable(name)),
+    }
+}
+
 #[allow(clippy::items_after_test_module)]
 fn optional_bool(name: &'static str, default: bool) -> Result<bool, ConfigError> {
     match env::var(name) {
