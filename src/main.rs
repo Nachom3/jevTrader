@@ -21,6 +21,10 @@ use polymarket_client_sdk_v2::gamma::Client as GammaClient;
 use tokio::sync::mpsc;
 
 fn main() -> Result<()> {
+    // Both `ring` and `aws-lc-rs` end up compiled in via transitive TLS
+    // features, so rustls cannot auto-pick a process CryptoProvider and the
+    // first TLS use panics. Pin `ring` explicitly before any worker spawns.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(start())
 }
@@ -67,7 +71,7 @@ async fn run_shadow_paper(config: AppConfig, market: MarketSpec, deadline: Durat
     let metadata = fetch_market_by_slug(&gamma, &market.slug)
         .await
         .context("fetching Polymarket market metadata")?;
-    let clob = ClobClient::new("https://clob-v2.polymarket.com", ClobConfig::default())
+    let clob = ClobClient::new("https://clob.polymarket.com", ClobConfig::default())
         .context("creating the public Polymarket CLOB client")?;
     let top = fetch_top_of_book(&clob, &metadata.yes_token_id)
         .await
