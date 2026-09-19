@@ -20,7 +20,7 @@ use crate::state::feature_builder::{
 };
 use crate::state::poly_history::PolyHistory;
 use crate::state::quant_features::build_quant;
-use crate::storage::{QuestDbHandle, StorageEvent};
+use crate::storage::{QuestDbHandle, StorageEvent, Variant};
 use crate::strategy::lead_lag::PolySnapshot;
 use crate::strategy::quote::{QuoteIntent, decide_quote};
 use crate::strategy::risk::RiskBlock;
@@ -184,6 +184,7 @@ pub struct StepResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedMarkout {
     pub condition_id: String,
+    pub variant: Variant,
     pub jev_ts: i64,
     pub side: TradeSide,
     pub price: PriceTicks,
@@ -205,6 +206,7 @@ impl CompletedMarkout {
         StorageEvent::MakerMarkout {
             ts: millis_to_micros(self.completed_at_ms),
             condition_id: self.condition_id,
+            variant: self.variant,
             jev_ts: self.jev_ts,
             side: match self.side {
                 TradeSide::Buy => "BUY".to_owned(),
@@ -229,12 +231,26 @@ impl CompletedMarkout {
 #[derive(Debug)]
 struct PendingMarkout {
     condition_id: String,
+    variant: Variant,
     jev_ts: i64,
     side: TradeSide,
     price: PriceTicks,
     size: u64,
     quoted_at_ms: i64,
     mids: [Option<PriceTicks>; 5],
+}
+
+/// One quote to track for maker markouts, carrying its A/B variant so
+/// CONTROL and QUANT_V1 fills complete into separately labeled rows.
+#[derive(Debug, Clone)]
+pub struct MarkoutQuote {
+    pub condition_id: String,
+    pub jev_ts: i64,
+    pub side: TradeSide,
+    pub price: PriceTicks,
+    pub size: u64,
+    pub quoted_at_ms: i64,
+    pub variant: Variant,
 }
 
 /// Pure timestamp-driven markout tracker.
@@ -261,13 +277,26 @@ impl MarkoutTracker {
         size: u64,
         quoted_at_ms: i64,
     ) {
-        self.pending.push(PendingMarkout {
+        self.add_quote_with_variant(MarkoutQuote {
             condition_id: condition_id.into(),
             jev_ts,
             side,
             price,
             size,
             quoted_at_ms,
+            variant: Variant::Control,
+        });
+    }
+
+    pub fn add_quote_with_variant(&mut self, quote: MarkoutQuote) {
+        self.pending.push(PendingMarkout {
+            condition_id: quote.condition_id,
+            variant: quote.variant,
+            jev_ts: quote.jev_ts,
+            side: quote.side,
+            price: quote.price,
+            size: quote.size,
+            quoted_at_ms: quote.quoted_at_ms,
             mids: [None; 5],
         });
     }
@@ -300,6 +329,7 @@ impl MarkoutTracker {
             {
                 completed.push(CompletedMarkout {
                     condition_id: pending.condition_id,
+                    variant: pending.variant,
                     jev_ts: pending.jev_ts,
                     side: pending.side,
                     price: pending.price,
@@ -363,6 +393,8 @@ pub struct Pipeline<E = SignalActor> {
     quant: QuantConfig,
     poly_history: PolyHistory,
     markouts: MarkoutTracker,
+    #[cfg(test)]
+    persisted_events: std::cell::RefCell<Vec<StorageEvent>>,
 }
 
 impl Pipeline<SignalActor> {
@@ -418,6 +450,8 @@ impl<E: SignalEvaluator> Pipeline<E> {
             quant,
             poly_history: PolyHistory::new(poly_history_capacity),
             markouts: MarkoutTracker::new(),
+            #[cfg(test)]
+            persisted_events: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -445,7 +479,13 @@ impl<E: SignalEvaluator> Pipeline<E> {
             None
         };
         if let Some(outcome) = early_outcome {
-            self.persist_decision(&input, outcome, input.observed_at_ms, None);
+            self.persist_decision(
+                &input,
+                outcome,
+                input.observed_at_ms,
+                None,
+                Variant::Control,
+            );
             return StepResult {
                 outcome,
                 jev_evaluated: false,
@@ -458,7 +498,13 @@ impl<E: SignalEvaluator> Pipeline<E> {
             // The guard above makes this unreachable, but keeping this branch
             // explicit avoids a panic if the guard and constructor diverge.
             let outcome = Outcome::Skip(SkipReason::InvalidCandidate);
-            self.persist_decision(&input, outcome, input.observed_at_ms, None);
+            self.persist_decision(
+                &input,
+                outcome,
+                input.observed_at_ms,
+                None,
+                Variant::Control,
+            );
             return StepResult {
                 outcome,
                 jev_evaluated: false,
@@ -472,7 +518,13 @@ impl<E: SignalEvaluator> Pipeline<E> {
             input.observed_at_ms,
         ) else {
             let outcome = Outcome::Skip(SkipReason::InvalidCandidate);
-            self.persist_decision(&input, outcome, input.observed_at_ms, None);
+            self.persist_decision(
+                &input,
+                outcome,
+                input.observed_at_ms,
+                None,
+                Variant::Control,
+            );
             return StepResult {
                 outcome,
                 jev_evaluated: false,
@@ -487,25 +539,25 @@ impl<E: SignalEvaluator> Pipeline<E> {
             input.venues,
             input.order_flow,
         );
-        // Quant enrichment is flag-gated: `None` serializes as `quant: null`,
-        // keeping the eight Jev questions identical for a clean OFF vs ON A/B.
-        let quant = self
-            .quant
-            .enabled
-            .then(|| build_quant(&features, &self.quant.params));
-        let state = V1State::new(
+        let control_state = V1State::new(
             input.market_spec.question.as_str(),
             input.market_spec.resolution_rules.as_str(),
-            features,
+            features.clone(),
             poly_snapshot.clone(),
-            quant,
+            None,
             candidate_price,
         );
-        let state_json = match serde_json::to_string(&state) {
+        let control_state_json = match serde_json::to_string(&control_state) {
             Ok(state_json) => state_json,
             Err(_error) => {
                 let outcome = Outcome::Skip(SkipReason::StateSerialization);
-                self.persist_decision(&input, outcome, input.observed_at_ms, Some(&poly_snapshot));
+                self.persist_decision(
+                    &input,
+                    outcome,
+                    input.observed_at_ms,
+                    Some(&poly_snapshot),
+                    Variant::Control,
+                );
                 return StepResult {
                     outcome,
                     jev_evaluated: false,
@@ -517,7 +569,13 @@ impl<E: SignalEvaluator> Pipeline<E> {
             Ok(questions_json) => questions_json,
             Err(_error) => {
                 let outcome = Outcome::Skip(SkipReason::StateSerialization);
-                self.persist_decision(&input, outcome, input.observed_at_ms, Some(&poly_snapshot));
+                self.persist_decision(
+                    &input,
+                    outcome,
+                    input.observed_at_ms,
+                    Some(&poly_snapshot),
+                    Variant::Control,
+                );
                 return StepResult {
                     outcome,
                     jev_evaluated: false,
@@ -525,96 +583,217 @@ impl<E: SignalEvaluator> Pipeline<E> {
                 };
             }
         };
-        let state_hash = hash_text(&state_json);
+        let control_state_hash = hash_text(&control_state_json);
 
-        let evaluation = match self
-            .signal_actor
-            .evaluate_next(&state, input.market_id, &self.api_key, self.deadline)
-            .await
-        {
-            Ok(evaluation) => evaluation,
-            Err(_error) => {
-                let outcome = Outcome::Skip(SkipReason::JevError);
-                self.persist_decision(&input, outcome, input.observed_at_ms, Some(&poly_snapshot));
-                return StepResult {
-                    outcome,
-                    jev_evaluated: true,
-                    markouts_emitted,
-                };
+        if !self.quant.enabled {
+            let (evaluation, signal) = self.evaluate_branch(&control_state, input.market_id).await;
+            if let Ok(evaluation) = &evaluation {
+                self.persist_signal(
+                    &input,
+                    Variant::Control,
+                    &control_state_hash,
+                    &control_state_json,
+                    &questions_json,
+                    evaluation,
+                );
             }
-        };
-
-        self.enqueue(StorageEvent::jev_signal(
-            millis_to_micros(evaluation.received_at_ms),
-            input.condition_id,
-            state_hash,
-            state_json,
-            questions_json,
-            i64::try_from(evaluation.state_seq).unwrap_or(i64::MAX),
-            i64::try_from(evaluation.latency_ms).unwrap_or(i64::MAX),
-            input.trigger,
-            &evaluation.signal,
-        ));
-
-        let Some(signal) = self.signal_actor.usable_signal().cloned() else {
-            let outcome = Outcome::Skip(SkipReason::UnusableSignal);
-            self.persist_decision(
+            let outcome = self.finish_branch(
                 &input,
-                outcome,
-                evaluation.received_at_ms,
-                Some(&poly_snapshot),
+                &poly_snapshot,
+                Variant::Control,
+                &evaluation,
+                signal,
+                true,
             );
             return StepResult {
                 outcome,
                 jev_evaluated: true,
                 markouts_emitted,
             };
-        };
+        }
 
-        // `decide_quote` owns the strategy-side checks; `on_quote` is the
-        // existing execution boundary and sole runtime RiskGate invocation.
-        // Do not call RiskGate separately here, or the gates could diverge.
-        let decision = decide(DecisionInput {
-            signal: &signal,
-            market: &input.snapshot,
-            thresholds: &self.thresholds,
-            tick_size: input.tick_size,
-            size: input.size,
-        });
-        let outcome = match decision {
-            Outcome::Quote(intent) => match self.execution_actor.on_quote(
-                intent,
-                input.snapshot.stale || input.snapshot.book.is_stale(),
-                evaluation.latency_ms,
-            ) {
-                Ok(_) => Outcome::Quote(intent),
-                Err(block) => Outcome::Skip(SkipReason::RiskBlocked(block)),
-            },
-            Outcome::Skip(reason) => Outcome::Skip(reason),
-        };
-
-        self.persist_decision(
-            &input,
-            outcome,
-            evaluation.received_at_ms,
-            Some(&poly_snapshot),
+        let quant_state = V1State::new(
+            input.market_spec.question.as_str(),
+            input.market_spec.resolution_rules.as_str(),
+            features,
+            poly_snapshot.clone(),
+            Some(build_quant(&control_state.underlying, &self.quant.params)),
+            candidate_price,
         );
-        if let Outcome::Quote(intent) = outcome {
-            self.markouts.add_quote(
-                input.condition_id,
-                millis_to_micros(evaluation.received_at_ms),
-                intent.side,
-                intent.price,
-                intent.size,
-                input.observed_at_ms,
+        let quant_state_json = match serde_json::to_string(&quant_state) {
+            Ok(state_json) => state_json,
+            Err(_error) => {
+                // Serialization failures remain a single control-labelled
+                // early skip; neither branch has made a Jev call yet.
+                let outcome = Outcome::Skip(SkipReason::StateSerialization);
+                self.persist_decision(
+                    &input,
+                    outcome,
+                    input.observed_at_ms,
+                    Some(&poly_snapshot),
+                    Variant::Control,
+                );
+                return StepResult {
+                    outcome,
+                    jev_evaluated: false,
+                    markouts_emitted,
+                };
+            }
+        };
+        let quant_state_hash = hash_text(&quant_state_json);
+
+        // Shadow mode evaluates the stateful actor sequentially, which costs
+        // roughly 2x Jev latency. The branches still share this frozen feature
+        // snapshot and never share execution decisions.
+        let (control_evaluation, control_signal) =
+            self.evaluate_branch(&control_state, input.market_id).await;
+        if let Ok(evaluation) = &control_evaluation {
+            self.persist_signal(
+                &input,
+                Variant::Control,
+                &control_state_hash,
+                &control_state_json,
+                &questions_json,
+                evaluation,
             );
         }
+
+        let (quant_evaluation, quant_signal) =
+            self.evaluate_branch(&quant_state, input.market_id).await;
+        if let Ok(evaluation) = &quant_evaluation {
+            self.persist_signal(
+                &input,
+                Variant::QuantV1,
+                &quant_state_hash,
+                &quant_state_json,
+                &questions_json,
+                evaluation,
+            );
+        }
+
+        // CONTROL is shadow-only: it records the decision and hypothetical
+        // markout, but it can never reach the execution actor.
+        let _control_outcome = self.finish_branch(
+            &input,
+            &poly_snapshot,
+            Variant::Control,
+            &control_evaluation,
+            control_signal,
+            false,
+        );
+        // QUANT_V1 is primary when enabled and is the only branch allowed to
+        // invoke the execution actor.
+        let outcome = self.finish_branch(
+            &input,
+            &poly_snapshot,
+            Variant::QuantV1,
+            &quant_evaluation,
+            quant_signal,
+            true,
+        );
 
         StepResult {
             outcome,
             jev_evaluated: true,
             markouts_emitted,
         }
+    }
+
+    async fn evaluate_branch(
+        &mut self,
+        state: &V1State,
+        market_id: &str,
+    ) -> (Result<JevEvaluation, JevError>, Option<V1Signal>) {
+        let evaluation = self
+            .signal_actor
+            .evaluate_next(state, market_id, &self.api_key, self.deadline)
+            .await;
+        let signal = if evaluation.is_ok() {
+            self.signal_actor.usable_signal().cloned()
+        } else {
+            None
+        };
+        (evaluation, signal)
+    }
+
+    fn persist_signal(
+        &self,
+        input: &PipelineInput<'_>,
+        variant: Variant,
+        state_hash: &str,
+        state_json: &str,
+        questions_json: &str,
+        evaluation: &JevEvaluation,
+    ) {
+        self.enqueue(StorageEvent::jev_signal(
+            millis_to_micros(evaluation.received_at_ms),
+            input.condition_id,
+            state_hash.to_owned(),
+            state_json.to_owned(),
+            questions_json.to_owned(),
+            i64::try_from(evaluation.state_seq).unwrap_or(i64::MAX),
+            i64::try_from(evaluation.latency_ms).unwrap_or(i64::MAX),
+            input.trigger,
+            variant,
+            &evaluation.signal,
+        ));
+    }
+
+    fn finish_branch(
+        &mut self,
+        input: &PipelineInput<'_>,
+        poly_snapshot: &PolySnapshot,
+        variant: Variant,
+        evaluation: &Result<JevEvaluation, JevError>,
+        signal: Option<V1Signal>,
+        execute: bool,
+    ) -> Outcome {
+        let outcome = match (evaluation, signal) {
+            (Err(_), _) => Outcome::Skip(SkipReason::JevError),
+            (Ok(_), None) => Outcome::Skip(SkipReason::UnusableSignal),
+            (Ok(evaluation), Some(signal)) => {
+                let decision = decide(DecisionInput {
+                    signal: &signal,
+                    market: &input.snapshot,
+                    thresholds: &self.thresholds,
+                    tick_size: input.tick_size,
+                    size: input.size,
+                });
+                if execute {
+                    // `decide_quote` owns the strategy-side checks; `on_quote`
+                    // is the sole runtime RiskGate invocation.
+                    match decision {
+                        Outcome::Quote(intent) => match self.execution_actor.on_quote(
+                            intent,
+                            input.snapshot.stale || input.snapshot.book.is_stale(),
+                            evaluation.latency_ms,
+                        ) {
+                            Ok(_) => Outcome::Quote(intent),
+                            Err(block) => Outcome::Skip(SkipReason::RiskBlocked(block)),
+                        },
+                        Outcome::Skip(reason) => Outcome::Skip(reason),
+                    }
+                } else {
+                    decision
+                }
+            }
+        };
+        let jev_ts_ms = evaluation
+            .as_ref()
+            .map_or(input.observed_at_ms, |evaluation| evaluation.received_at_ms);
+        self.persist_decision(input, outcome, jev_ts_ms, Some(poly_snapshot), variant);
+        if let Outcome::Quote(intent) = outcome {
+            self.markouts.add_quote_with_variant(MarkoutQuote {
+                condition_id: input.condition_id.to_owned(),
+                jev_ts: millis_to_micros(jev_ts_ms),
+                side: intent.side,
+                price: intent.price,
+                size: intent.size,
+                quoted_at_ms: input.observed_at_ms,
+                variant,
+            });
+        }
+        outcome
     }
 
     fn persist_markouts(&self, markouts: Vec<CompletedMarkout>) {
@@ -629,6 +808,7 @@ impl<E: SignalEvaluator> Pipeline<E> {
         outcome: Outcome,
         jev_ts_ms: i64,
         poly_snapshot: Option<&PolySnapshot>,
+        variant: Variant,
     ) {
         let (paper_price, fair_value) = match (outcome, poly_snapshot) {
             (Outcome::Quote(intent), Some(poly)) => (intent.price.to_f64(), poly.yes_ask.to_f64()),
@@ -643,6 +823,7 @@ impl<E: SignalEvaluator> Pipeline<E> {
         self.enqueue(StorageEvent::PaperDecision {
             ts: millis_to_micros(input.observed_at_ms),
             condition_id: input.condition_id.to_owned(),
+            variant,
             jev_ts: millis_to_micros(jev_ts_ms),
             edge,
             threshold: 0.0,
@@ -655,6 +836,8 @@ impl<E: SignalEvaluator> Pipeline<E> {
     }
 
     fn enqueue(&self, event: StorageEvent) {
+        #[cfg(test)]
+        self.persisted_events.borrow_mut().push(event.clone());
         if let Some(questdb) = &self.questdb {
             let _ = questdb.try_send(event);
         }
@@ -734,6 +917,7 @@ mod tests {
     #[derive(Debug)]
     struct FakeEvaluator {
         result: Option<Result<JevEvaluation, JevError>>,
+        queued_results: Vec<Result<JevEvaluation, JevError>>,
         signal: Option<V1Signal>,
         calls: usize,
     }
@@ -748,11 +932,15 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<JevEvaluation, JevError>> + Send + 'a>> {
             self.calls += 1;
             // Move the configured result so Parse, Status, Deadline, and other
-            // JevError variants reach the pipeline unchanged.
-            let result = self
-                .result
-                .take()
-                .unwrap_or_else(|| Err(JevError::Deadline));
+            // JevError variants reach the pipeline unchanged. Shadow tests use
+            // the queue to serve the control and quant evaluations in order.
+            let result = if self.queued_results.is_empty() {
+                self.result
+                    .take()
+                    .unwrap_or_else(|| Err(JevError::Deadline))
+            } else {
+                self.queued_results.remove(0)
+            };
             Box::pin(future::ready(result))
         }
 
@@ -878,6 +1066,7 @@ mod tests {
     async fn happy_path_quotes_without_network() {
         let evaluator = FakeEvaluator {
             result: Some(Ok(evaluation())),
+            queued_results: Vec::new(),
             signal: Some(signal()),
             calls: 0,
         };
@@ -897,6 +1086,7 @@ mod tests {
     async fn stale_book_skips_before_calling_jev() {
         let evaluator = FakeEvaluator {
             result: Some(Ok(evaluation())),
+            queued_results: Vec::new(),
             signal: Some(signal()),
             calls: 0,
         };
@@ -915,6 +1105,7 @@ mod tests {
     async fn jev_error_skips_without_retry() {
         let evaluator = FakeEvaluator {
             result: Some(Err(JevError::Deadline)),
+            queued_results: Vec::new(),
             signal: None,
             calls: 0,
         };
@@ -933,6 +1124,7 @@ mod tests {
     async fn zero_size_skips_before_calling_jev() {
         let evaluator = FakeEvaluator {
             result: Some(Ok(evaluation())),
+            queued_results: Vec::new(),
             signal: Some(signal()),
             calls: 0,
         };
@@ -953,6 +1145,7 @@ mod tests {
             result: Some(Err(JevError::Parse(JevParseError::MissingAnswer(
                 "yes_pressure_5s",
             )))),
+            queued_results: Vec::new(),
             signal: None,
             calls: 0,
         };
@@ -974,6 +1167,7 @@ mod tests {
     async fn invalid_candidate_skips_before_calling_jev() {
         let evaluator = FakeEvaluator {
             result: Some(Ok(evaluation())),
+            queued_results: Vec::new(),
             signal: Some(signal()),
             calls: 0,
         };
@@ -986,6 +1180,83 @@ mod tests {
         assert_eq!(result.outcome, Outcome::Skip(SkipReason::InvalidCandidate));
         assert!(!result.jev_evaluated);
         assert_eq!(pipeline.signal_actor.calls, 0);
+    }
+
+    #[tokio::test]
+    async fn quant_shadow_pairs_signals_and_isolates_execution() {
+        let evaluator = FakeEvaluator {
+            result: None,
+            queued_results: vec![Ok(evaluation()), Ok(evaluation())],
+            signal: Some(signal()),
+            calls: 0,
+        };
+        let mut pipeline = pipeline(evaluator);
+        pipeline.quant.enabled = true;
+
+        let result = pipeline
+            .run_step(input(market(false, 0.40, 0.45), 25, 1_000))
+            .await;
+
+        assert!(matches!(result.outcome, Outcome::Quote(_)));
+        assert_eq!(pipeline.signal_actor.calls, 2);
+        assert_eq!(pipeline.execution_actor.outstanding(), 1);
+        assert_eq!(pipeline.markouts.pending(), 2);
+
+        let events = pipeline.persisted_events.borrow();
+        let signals: Vec<(Variant, String, String, String)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StorageEvent::JevSignal {
+                    variant,
+                    state_hash,
+                    state_json,
+                    questions_json,
+                    ..
+                } => Some((
+                    *variant,
+                    state_hash.clone(),
+                    state_json.clone(),
+                    questions_json.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(signals.len(), 2);
+        assert_eq!(
+            signals.iter().map(|signal| signal.0).collect::<Vec<_>>(),
+            vec![Variant::Control, Variant::QuantV1]
+        );
+        assert_ne!(signals[0].1, signals[1].1);
+        assert_eq!(signals[0].3, signals[1].3);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&signals[0].2)
+                .expect("control state JSON")
+                .get("quant")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&signals[1].2)
+                .expect("quant state JSON")
+                .get("quant")
+                .is_some_and(|quant| !quant.is_null())
+        );
+
+        let decisions: Vec<(Variant, String)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StorageEvent::PaperDecision {
+                    variant, decision, ..
+                } => Some((*variant, decision.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            decisions,
+            vec![
+                (Variant::Control, "QUOTE".to_owned()),
+                (Variant::QuantV1, "QUOTE".to_owned()),
+            ]
+        );
     }
 
     #[test]

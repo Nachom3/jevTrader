@@ -1,10 +1,21 @@
 //! Actor orchestration.
 
 #[allow(dead_code)]
+pub mod execution_actor;
+
+pub mod pipeline;
+
+#[allow(dead_code)]
 pub mod market_actor;
 
 #[allow(dead_code)]
 pub mod signal_actor;
+
+pub use execution_actor::ExecutionActor;
+pub use pipeline::{
+    CompletedMarkout, DecisionInput, MarkoutTracker, Outcome, Pipeline, PipelineInput, SkipReason,
+    StepResult, candidate_maker_price, decide,
+};
 
 pub use market_actor::{
     BestBidAskUpdate, BookDelta, BookSnapshot, LastTradePriceUpdate, MarketActor, MarketMessage,
