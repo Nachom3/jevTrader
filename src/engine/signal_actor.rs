@@ -4,10 +4,11 @@
 //! The async boundary is intentionally limited to [`SignalActor::evaluate_next`];
 //! freshness decisions remain synchronous and can be tested without a runtime.
 
+use crate::config::FreshnessPolicy;
 use crate::jev::client::{JevError, evaluate};
+use crate::jev::request::V1State;
 use crate::jev::response::JevEvaluation;
 use crate::strategy::lead_lag::V1Signal;
-use serde_json::Value;
 use std::time::Duration;
 
 /// Freshness limits for allowing a Jev evaluation to reach a downstream quote
@@ -26,12 +27,21 @@ pub struct StalenessPolicy {
 }
 
 impl StalenessPolicy {
-    /// Default sequence lag tolerance: two state updates.
-    pub const DEFAULT_MAX_LAG: u64 = 2;
-    /// Default latency limit: 1.5 seconds.
-    pub const DEFAULT_MAX_LATENCY_MS: u64 = 1_500;
+    /// Default sequence lag tolerance, sourced from [`FreshnessPolicy`].
+    pub const DEFAULT_MAX_LAG: u64 = FreshnessPolicy::DEFAULT_MAX_LAG;
+    /// Default latency limit, sourced from [`FreshnessPolicy`].
+    pub const DEFAULT_MAX_LATENCY_MS: u64 = FreshnessPolicy::DEFAULT_MAX_LATENCY_MS;
 
-    /// Creates an explicit freshness policy.
+    /// Creates an explicit staleness view of a shared freshness policy.
+    #[must_use]
+    pub const fn from_freshness_policy(policy: FreshnessPolicy) -> Self {
+        Self {
+            max_lag: policy.max_lag,
+            max_latency_ms: policy.max_latency_ms,
+        }
+    }
+
+    /// Creates an explicit staleness policy.
     #[must_use]
     pub const fn new(max_lag: u64, max_latency_ms: u64) -> Self {
         Self {
@@ -52,10 +62,22 @@ impl StalenessPolicy {
     }
 }
 
+impl From<FreshnessPolicy> for StalenessPolicy {
+    fn from(policy: FreshnessPolicy) -> Self {
+        Self::from_freshness_policy(policy)
+    }
+}
+
+impl From<StalenessPolicy> for FreshnessPolicy {
+    fn from(policy: StalenessPolicy) -> Self {
+        Self::new(policy.max_lag, policy.max_latency_ms)
+    }
+}
+
 impl Default for StalenessPolicy {
-    /// Uses a two-state lag and 1.5-second latency budget.
+    /// Uses the shared two-state lag and 1.5-second latency budget.
     fn default() -> Self {
-        Self::new(Self::DEFAULT_MAX_LAG, Self::DEFAULT_MAX_LATENCY_MS)
+        Self::from_freshness_policy(FreshnessPolicy::default())
     }
 }
 
@@ -77,6 +99,12 @@ impl SignalActor {
             latest_evaluation: None,
             staleness_policy,
         }
+    }
+
+    /// Creates an actor from the shared application freshness policy.
+    #[must_use]
+    pub const fn from_freshness_policy(policy: FreshnessPolicy) -> Self {
+        Self::new(StalenessPolicy::from_freshness_policy(policy))
     }
 
     /// The sequence number of the newest state sent for evaluation.
@@ -127,14 +155,13 @@ impl SignalActor {
     /// No Tokio runtime or network work is owned by the actor itself.
     pub async fn evaluate_next(
         &mut self,
-        state_value: &Value,
+        state: &V1State,
         market_id: &str,
         api_key: &str,
         deadline: Duration,
     ) -> Result<JevEvaluation, JevError> {
         self.state_seq = self.state_seq.saturating_add(1);
-        let evaluation =
-            evaluate(state_value, self.state_seq, market_id, api_key, deadline).await?;
+        let evaluation = evaluate(state, self.state_seq, market_id, api_key, deadline).await?;
         self.record_evaluation(evaluation.clone());
         Ok(evaluation)
     }
@@ -142,7 +169,7 @@ impl SignalActor {
 
 impl Default for SignalActor {
     fn default() -> Self {
-        Self::new(StalenessPolicy::default())
+        Self::from_freshness_policy(FreshnessPolicy::default())
     }
 }
 
@@ -232,5 +259,37 @@ mod tests {
         actor.record_evaluation(synthetic_evaluation(7, 100));
 
         assert!(actor.usable_signal().is_none());
+    }
+
+    #[test]
+    fn signal_and_risk_gate_use_the_same_configured_freshness() {
+        let config = crate::config::AppConfig {
+            typesafe_api_key: String::new(),
+            polymarket_private_key: String::new(),
+            questdb_http_url: String::new(),
+            questdb_ilp_addr: String::new(),
+            quote_thresholds: crate::config::QuoteThresholds::default(),
+            freshness_policy: FreshnessPolicy::new(7, 900),
+            quant: crate::config::QuantConfig::default(),
+        };
+        let signal_actor = SignalActor::from_freshness_policy(config.freshness_policy);
+        let risk_gate = crate::strategy::risk::RiskGate::from_freshness_policy(
+            2,
+            config.freshness_policy,
+            false,
+        );
+
+        assert_eq!(
+            signal_actor.staleness_policy().max_lag,
+            config.freshness_policy.max_lag
+        );
+        assert_eq!(
+            signal_actor.staleness_policy().max_latency_ms,
+            risk_gate.limits().max_latency_ms
+        );
+        assert_eq!(
+            risk_gate.limits().max_latency_ms,
+            config.freshness_policy.max_latency_ms
+        );
     }
 }
