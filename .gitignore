@@ -13,3 +13,12 @@ target/
 .env
 odd/
 .github/
+
+# Historical research data (never commit datasets)
+research-data/raw/
+research-data/processed/*.parquet
+research-data/processed/*.csv
+research-data/reports/*.json
+research-data/reports/*.csv
+research-data/reports/*.parquet
+# Keep: research-data/manifest.json (small, reproducible), research/config/, research/scripts/

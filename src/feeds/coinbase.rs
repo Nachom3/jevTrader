@@ -14,12 +14,24 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::types::{FeedError, Venue, VenueTick, parse_rfc3339_millis};
+use crate::domain::Asset;
 
 /// Coinbase Exchange public WebSocket endpoint.
 pub const DEFAULT_WS_URL: &str = "wss://ws-feed.exchange.coinbase.com";
 /// Channels subscribed to by [`CoinbaseFeed`].
 pub const SUBSCRIPTION_CHANNELS: [&str; 2] = ["ticker", "matches"];
 const PRODUCT_ID: &str = "BTC-USD";
+/// ETH product shared by Coinbase subscriptions, checks, and normalized ticks.
+pub const ETH_PRODUCT_ID: &str = "ETH-USD";
+
+/// Coinbase product for one asset.
+#[must_use]
+pub const fn product_id(asset: Asset) -> &'static str {
+    match asset {
+        Asset::Btc => PRODUCT_ID,
+        Asset::Eth => ETH_PRODUCT_ID,
+    }
+}
 
 /// Runtime policy for Coinbase connection retries.
 ///
@@ -49,6 +61,7 @@ impl Default for CoinbaseFeedConfig {
 #[derive(Debug, Clone)]
 pub struct CoinbaseFeed {
     config: CoinbaseFeedConfig,
+    asset: Asset,
 }
 
 impl CoinbaseFeed {
@@ -56,19 +69,36 @@ impl CoinbaseFeed {
     /// limits.
     #[must_use]
     pub fn new() -> Self {
+        Self::for_asset(Asset::Btc)
+    }
+
+    /// Creates a feed for one asset (one connection per venue + asset, shared
+    /// by all horizons of that asset).
+    #[must_use]
+    pub fn for_asset(asset: Asset) -> Self {
         Self {
             config: CoinbaseFeedConfig::default(),
+            asset,
         }
     }
 
-    /// Creates a feed with an explicit endpoint and bounded retry policy.
+    /// Returns the asset this feed subscribes to.
+    #[must_use]
+    pub const fn asset(&self) -> Asset {
+        self.asset
+    }
+
+    /// Creates a BTC feed with an explicit endpoint and bounded retry policy.
     pub fn with_config(config: CoinbaseFeedConfig) -> Result<Self, FeedError> {
         if config.endpoint.trim().is_empty() {
             return Err(FeedError::Connect(
                 "Coinbase WebSocket URL is empty".to_owned(),
             ));
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            asset: Asset::Btc,
+        })
     }
 
     /// Runs the feed into a normalized tick channel until the retry budget is
@@ -97,14 +127,14 @@ impl CoinbaseFeed {
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
         socket
-            .send(Message::Text(subscription_message().into()))
+            .send(Message::Text(subscription_message_for(self.asset).into()))
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
 
         while let Some(message) = socket.next().await {
             match message.map_err(|error| FeedError::Connect(error.to_string()))? {
                 Message::Text(payload) => {
-                    for tick in parse_message(payload.as_ref())? {
+                    for tick in parse_message_for(payload.as_ref(), self.asset)? {
                         sender.send(tick).await.map_err(|_| {
                             FeedError::Connect("Coinbase tick consumer dropped".to_owned())
                         })?;
@@ -146,10 +176,11 @@ impl Default for CoinbaseFeed {
     }
 }
 
-fn subscription_message() -> String {
+/// Subscription message for one asset's ticker and matches channels.
+pub fn subscription_message_for(asset: Asset) -> String {
     serde_json::json!({
         "type": "subscribe",
-        "product_ids": [PRODUCT_ID],
+        "product_ids": [product_id(asset)],
         "channels": SUBSCRIPTION_CHANNELS,
     })
     .to_string()
@@ -160,6 +191,12 @@ fn subscription_message() -> String {
 /// Subscription acknowledgements and unrelated control messages produce an
 /// empty vector. A ticker or match payload produces one normalized tick.
 pub fn parse_message(payload: &str) -> Result<Vec<VenueTick>, FeedError> {
+    parse_message_for(payload, Asset::Btc)
+}
+
+/// Parses one payload for the given asset's product.
+pub fn parse_message_for(payload: &str, asset: Asset) -> Result<Vec<VenueTick>, FeedError> {
+    let expected = product_id(asset);
     let value: Value = serde_json::from_str(payload)
         .map_err(|error| FeedError::Parse(format!("invalid Coinbase JSON: {error}")))?;
     let Some(message_type) = value.get("type").and_then(Value::as_str) else {
@@ -167,14 +204,14 @@ pub fn parse_message(payload: &str) -> Result<Vec<VenueTick>, FeedError> {
     };
 
     match message_type {
-        "ticker" => Ok(vec![parse_ticker(&value)?]),
-        "match" | "last_match" => Ok(vec![parse_match(&value)?]),
+        "ticker" => Ok(vec![parse_ticker(&value, expected)?]),
+        "match" | "last_match" => Ok(vec![parse_match(&value, expected)?]),
         _ => Ok(Vec::new()),
     }
 }
 
-fn parse_ticker(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_product(value)?;
+fn parse_ticker(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_product(value, expected)?;
     let price = number_field(value, "price")?;
     let bid = number_field(value, "best_bid")?;
     let ask = number_field(value, "best_ask")?;
@@ -192,7 +229,7 @@ fn parse_ticker(value: &Value) -> Result<VenueTick, FeedError> {
 
     Ok(VenueTick {
         venue: Venue::Coinbase,
-        symbol: PRODUCT_ID,
+        symbol: expected,
         price_f64: price,
         best_bid_f64: bid,
         best_ask_f64: ask,
@@ -203,8 +240,8 @@ fn parse_ticker(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn parse_match(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_product(value)?;
+fn parse_match(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_product(value, expected)?;
     let price = number_field(value, "price")?;
     let size = number_field(value, "size")?;
     let trade_side_buy = match value
@@ -223,7 +260,7 @@ fn parse_match(value: &Value) -> Result<VenueTick, FeedError> {
 
     Ok(VenueTick {
         venue: Venue::Coinbase,
-        symbol: PRODUCT_ID,
+        symbol: expected,
         price_f64: price,
         best_bid_f64: f64::NAN,
         best_ask_f64: f64::NAN,
@@ -234,12 +271,12 @@ fn parse_match(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn ensure_product(value: &Value) -> Result<(), FeedError> {
+fn ensure_product(value: &Value, expected: &'static str) -> Result<(), FeedError> {
     let product = value
         .get("product_id")
         .and_then(Value::as_str)
         .ok_or_else(|| FeedError::Parse("Coinbase product_id is missing".to_owned()))?;
-    if product != PRODUCT_ID {
+    if product != expected {
         return Err(FeedError::Parse(format!(
             "unexpected Coinbase product `{product}`"
         )));
@@ -338,5 +375,21 @@ mod tests {
         assert!(!tick.trade_side_buy);
         assert_eq!(tick.ts_exchange_ms, 1_704_164_645_000);
         assert!(tick.best_bid_f64.is_nan());
+    }
+
+    #[test]
+    fn parses_eth_ticker_payload() {
+        let payload = r#"{
+            "type":"ticker","sequence":123,"product_id":"ETH-USD",
+            "price":"2200.25","best_bid":"2200.20","best_ask":"2200.30",
+            "side":"buy","time":"2024-01-02T03:04:05.678901Z","last_size":"0.25"
+        }"#;
+
+        let ticks = super::parse_message_for(payload, crate::domain::Asset::Eth).unwrap();
+        let tick = ticks[0];
+        assert_eq!(tick.symbol, super::ETH_PRODUCT_ID);
+        assert_eq!(tick.price_f64, 2200.25);
+        assert_eq!(tick.best_bid_f64, 2200.20);
+        assert_eq!(tick.best_ask_f64, 2200.30);
     }
 }

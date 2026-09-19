@@ -8,6 +8,7 @@ pub mod feeds;
 pub mod jev;
 pub mod market_spec;
 pub mod polymarket;
+pub mod replay;
 pub mod state;
 pub mod storage;
 pub mod strategy;

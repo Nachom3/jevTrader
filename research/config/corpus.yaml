@@ -1,0 +1,71 @@
+# jevTrader corpus config.
+# All sizes/dates/counts configurable; nothing hardcoded in scripts.
+
+research_max_download_gb: 8.0
+# Hard stop: scripts abort before exceeding this budget (raw/ only).
+
+assets: [BTC, ETH]
+horizons: [5m, 15m, 1h, 4h]
+
+# Date bounds for discovery (bootstrap). Expand freely for full corpus.
+start_date: "2024-01-01"
+end_date: "2026-04-28"
+
+# Bootstrap: several non-consecutive weeks across regimes.
+bootstrap_weeks: 4
+bootstrap_week_length_days: 7
+min_weeks_per_regime: 1
+
+# Market discovery caps
+target_market_count: 400
+max_markets_per_bucket: 60   # per ASSET-HORIZON (8 buckets)
+
+# Regime classification (on Binance 1m closes, log/simple returns in pp)
+vol_windows_days: 30
+low_vol_q: 0.33
+high_vol_q: 0.66
+strong_trend_pp_per_day: 3.0
+
+# Splits temporal, no random.
+# Fractions of selected markets sorted by start_at.
+splits:
+  EXPLORATION: 0.5
+  VALIDATION: 0.25
+  OUT_OF_SAMPLE: 0.25
+
+# Polymarket extraction
+# SII trades.parquet is 37.5GB monolithic: NEVER auto-download full.
+sii:
+  markets_file: "markets.parquet"      # 294MB, full download allowed
+  trades_file: "trades.parquet"        # 37.5GB, selective only
+  quant_file: "quant.parquet"          # 36.6GB, selective only
+  forbidden: ["orderfilled.parquet", "users.parquet"]
+  # Predicate pushdown first via hf range; fallback to monthly TimeSeventeen.
+
+timeseventeen:
+  dataset: "TimeSeventeen/Polymarket-v1"
+  # Download ONLY months intersecting selected periods.
+  max_monthly_partitions: 6
+
+# Underlying (Binance mandatory; Coinbase/Deribit adapters prepared)
+underlying:
+  venues: [BINANCE]
+  # expand to BINANCE, COINBASE, DERIBIT when data exists
+  binance_data_types: [aggTrades, klines_1m, bookTicker]
+  binance_market: spot         # + futures/um when useful
+  symbols: [BTCUSDT, ETHUSDT]
+
+# Jev budget for smoke/full runs
+max_jev_calls_smoke: 100
+max_jev_calls_full: 10000
+jev_model: "jev-latest"
+
+# Replay defaults
+replay:
+  chunk_rows: 50000
+  latency_profiles:
+    FAST: {jev_ms: 100, submit_ms: 10, cancel_ms: 10}
+    BASE: {jev_ms: 320, submit_ms: 50, cancel_ms: 50}
+    SLOW: {jev_ms: 800, submit_ms: 150, cancel_ms: 150}
+  fill_models: [OPTIMISTIC, BASE, CONSERVATIVE]
+  markout_horizons_s: [1, 5, 10, 30, 60]

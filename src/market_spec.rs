@@ -4,6 +4,11 @@ use std::{collections::BTreeMap, fs, num::ParseFloatError, path::Path};
 
 use thiserror::Error;
 
+use crate::domain::{
+    Asset, Horizon, MarketKey, ReferencePoint, ReferencePrice, ResolutionMechanism,
+    ResolutionWindow,
+};
+
 const REQUIRED_FIELDS: [&str; 6] = [
     "slug",
     "question",
@@ -11,6 +16,14 @@ const REQUIRED_FIELDS: [&str; 6] = [
     "resolution_rules",
     "target",
     "resolution_at_ms",
+];
+
+const OPTIONAL_FIELDS: [&str; 5] = [
+    "asset",
+    "horizon",
+    "reference_source",
+    "window_secs",
+    "start_ms",
 ];
 
 /// The market metadata needed by the runtime decision pipeline.
@@ -22,6 +35,14 @@ pub struct MarketSpec {
     pub resolution_rules: String,
     pub target: f64,
     pub resolution_at_ms: i64,
+    /// Optional extended metadata. `None` means the spec file did not declare
+    /// it; callers fall back to slug inference via [`MarketSpec::asset`] /
+    /// [`MarketSpec::horizon`]. Old six-field specs keep parsing unchanged.
+    pub asset: Option<Asset>,
+    pub horizon: Option<Horizon>,
+    pub reference_source: Option<String>,
+    pub window_secs: Option<u64>,
+    pub start_ms: Option<i64>,
 }
 
 impl MarketSpec {
@@ -51,8 +72,9 @@ impl MarketSpec {
                 .clone()
         };
         let target_text = value("target");
+        let target_digits = target_text.replace('_', "");
         let target =
-            target_text
+            target_digits
                 .parse::<f64>()
                 .map_err(|source| MarketSpecError::InvalidTarget {
                     value: target_text,
@@ -67,21 +89,172 @@ impl MarketSpec {
         }
 
         let resolution_at_text = value("resolution_at_ms");
-        let resolution_at_ms = resolution_at_text.parse::<i64>().map_err(|source| {
+        let resolution_at_digits = resolution_at_text.replace('_', "");
+        let resolution_at_ms = resolution_at_digits.parse::<i64>().map_err(|source| {
             MarketSpecError::InvalidResolutionAtMs {
                 value: resolution_at_text,
                 source,
             }
         })?;
 
+        let slug = value("slug");
+        let _asset = fields
+            .get("asset")
+            .map(|value| {
+                value
+                    .parse::<Asset>()
+                    .map_err(|_| MarketSpecError::InvalidValue {
+                        field: "asset",
+                        value: value.clone(),
+                        reason: "must be BTC or ETH",
+                    })
+            })
+            .transpose()?
+            .or_else(|| Asset::from_slug(&slug));
+        let _horizon = fields
+            .get("horizon")
+            .map(|value| {
+                value
+                    .parse::<Horizon>()
+                    .map_err(|_| MarketSpecError::InvalidValue {
+                        field: "horizon",
+                        value: value.clone(),
+                        reason: "must be 5m, 15m, 1h, or 4h",
+                    })
+            })
+            .transpose()?
+            .or_else(|| Horizon::from_slug(&slug));
+        let _reference_source = fields.get("reference_source").cloned();
+        let _window_secs = fields
+            .get("window_secs")
+            .map(|value| {
+                value
+                    .replace('_', "")
+                    .parse::<u64>()
+                    .map_err(|_| MarketSpecError::InvalidValue {
+                        field: "window_secs",
+                        value: value.clone(),
+                        reason: "must be an unsigned integer",
+                    })
+            })
+            .transpose()?;
+        let _start_ms = fields
+            .get("start_ms")
+            .map(|value| {
+                value
+                    .replace('_', "")
+                    .parse::<i64>()
+                    .map_err(|_| MarketSpecError::InvalidValue {
+                        field: "start_ms",
+                        value: value.clone(),
+                        reason: "must be a signed integer",
+                    })
+            })
+            .transpose()?;
+
         Ok(Self {
-            slug: value("slug"),
+            slug,
             question: value("question"),
             resolution_source: value("resolution_source"),
             resolution_rules: value("resolution_rules"),
             target,
             resolution_at_ms,
+            asset: _asset,
+            horizon: _horizon,
+            reference_source: _reference_source,
+            window_secs: _window_secs,
+            start_ms: _start_ms,
         })
+    }
+
+    /// Returns explicit metadata when present, otherwise infers it from slug.
+    #[must_use]
+    pub fn asset(&self) -> Option<Asset> {
+        self.asset.or_else(|| Asset::from_slug(&self.slug))
+    }
+
+    /// Returns explicit metadata when present, otherwise infers it from slug.
+    #[must_use]
+    pub fn horizon(&self) -> Option<Horizon> {
+        self.horizon.or_else(|| Horizon::from_slug(&self.slug))
+    }
+
+    #[must_use]
+    pub fn market_key(&self) -> Option<MarketKey> {
+        Some(MarketKey::new(self.asset()?, self.horizon()?))
+    }
+
+    #[must_use]
+    pub fn resolution_mechanism(&self) -> ResolutionMechanism {
+        ResolutionMechanism::from_question(&self.question)
+    }
+
+    /// Returns signed percentage points from the target, matching the V1
+    /// feature-builder convention: `(reference / target - 1) * 100`.
+    #[must_use]
+    pub fn distance_to_target<P>(&self, reference: P) -> f64
+    where
+        P: Into<ReferencePrice>,
+    {
+        reference.into().distance_to_target_pct(self.target)
+    }
+
+    /// Returns signed percentage points in the direction favorable to YES.
+    #[must_use]
+    pub fn distance_to_target_for<P>(&self, reference: P) -> f64
+    where
+        P: Into<ReferencePrice>,
+    {
+        self.resolution_mechanism()
+            .distance_to_target_pct(reference.into(), self.target)
+    }
+
+    #[must_use]
+    pub fn time_remaining_ms(&self, now_ms: i64) -> u64 {
+        self.resolution_at_ms.saturating_sub(now_ms).max(0) as u64
+    }
+
+    #[must_use]
+    pub fn time_remaining_secs(&self, now_ms: i64) -> u64 {
+        self.time_remaining_ms(now_ms) / 1_000
+    }
+
+    #[must_use]
+    pub fn time_remaining(&self, now_ms: i64) -> u64 {
+        self.time_remaining_secs(now_ms)
+    }
+
+    /// Builds the full resolution window from spec metadata plus the observed
+    /// reference price. No exchange is hardcoded: the source comes from
+    /// `reference_source` (falling back to `resolution_source`), the window
+    /// length from `window_secs` (falling back to the horizon duration), and
+    /// the start from `start_ms` (falling back to `end - window`).
+    #[must_use]
+    pub fn resolution_window(&self, reference_value: f64, observed_at_ms: i64) -> ResolutionWindow {
+        let window_secs = self.window_secs.unwrap_or_else(|| {
+            self.horizon()
+                .map(|horizon| horizon.seconds())
+                .unwrap_or(300)
+        });
+        let end_ms = self.resolution_at_ms;
+        let start_ms = self
+            .start_ms
+            .unwrap_or_else(|| end_ms.saturating_sub((window_secs.saturating_mul(1_000)) as i64));
+        let source = self
+            .reference_source
+            .clone()
+            .unwrap_or_else(|| self.resolution_source.clone());
+        let window_label = self
+            .horizon()
+            .map(|horizon| horizon.as_str().to_owned())
+            .unwrap_or_else(|| format!("{window_secs}s"));
+        ResolutionWindow::new(
+            source.clone(),
+            window_label,
+            start_ms,
+            end_ms,
+            ReferencePoint::new(reference_value, source, observed_at_ms, window_secs),
+        )
     }
 }
 
@@ -173,7 +346,7 @@ fn parse_fields(contents: &str) -> Result<BTreeMap<String, String>, MarketSpecEr
             });
         };
         let key = key.trim();
-        if !REQUIRED_FIELDS.contains(&key) {
+        if !REQUIRED_FIELDS.contains(&key) && !OPTIONAL_FIELDS.contains(&key) {
             return Err(MarketSpecError::UnknownField {
                 field: key.to_owned(),
             });
@@ -205,6 +378,11 @@ fn field_name(field: &str) -> &'static str {
         "resolution_rules" => "resolution_rules",
         "target" => "target",
         "resolution_at_ms" => "resolution_at_ms",
+        "asset" => "asset",
+        "horizon" => "horizon",
+        "reference_source" => "reference_source",
+        "window_secs" => "window_secs",
+        "start_ms" => "start_ms",
         _ => "unknown",
     }
 }

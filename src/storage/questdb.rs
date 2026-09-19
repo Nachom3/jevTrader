@@ -25,6 +25,44 @@ impl Variant {
         }
     }
 }
+
+/// Dimensions that let every row group by run, A/B pair, and contract.
+///
+/// `run_id` identifies one shadow/paper process invocation; `pair_id` joins
+/// the CONTROL and QUANT_V1 rows evaluated on the same snapshot; `market_id`
+/// is the canonical contract tag (`BTC-5m`); `asset`/`horizon` repeat the
+/// contract axes for direct `GROUP BY` without parsing tags. An empty
+/// `pair_id` means that the row has no pair attribution: this is valid in
+/// production for early skips and fills/equity samples not attributable to an
+/// evaluated pair. Other empty dimensions still mean "unknown".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExperimentTags {
+    pub run_id: String,
+    pub pair_id: String,
+    pub market_id: String,
+    pub asset: String,
+    pub horizon: String,
+}
+
+impl ExperimentTags {
+    /// Creates tags for an evaluated pair or an explicitly unpaired row.
+    #[must_use]
+    pub fn new(
+        run_id: impl Into<String>,
+        pair_id: impl Into<String>,
+        market_id: impl Into<String>,
+        asset: impl Into<String>,
+        horizon: impl Into<String>,
+    ) -> Self {
+        Self {
+            run_id: run_id.into(),
+            pair_id: pair_id.into(),
+            market_id: market_id.into(),
+            asset: asset.into(),
+            horizon: horizon.into(),
+        }
+    }
+}
 use tokio::{sync::mpsc, task::JoinHandle};
 
 /// A row destined for one of the QuestDB tables defined in `questdb/schema.sql`.
@@ -127,6 +165,7 @@ pub enum StorageEvent {
         tokens_out: i64,
         trigger: String,
         variant: Variant,
+        tags: ExperimentTags,
     },
     /// A paper-trading decision linked to its Jev signal timestamp.
     ///
@@ -143,6 +182,7 @@ pub enum StorageEvent {
         paper_price: f64,
         size: f64,
         fair_value: f64,
+        tags: ExperimentTags,
     },
     /// The resolution label for a market.
     Resolution {
@@ -170,6 +210,78 @@ pub enum StorageEvent {
         pnl_10s_pp: f64,
         pnl_30s_pp: f64,
         pnl_60s_pp: f64,
+        tags: ExperimentTags,
+    },
+    /// One A/B pair lifecycle row: joins the CONTROL and QUANT_V1 rows that
+    /// share a `pair_id`. `status` is `complete` when both branches produced
+    /// a usable evaluation and `incomplete` otherwise; `control_ok`/`quant_ok`
+    /// are 1/0 flags. Incomplete pairs must be excluded from paired A/B
+    /// analysis and reported separately.
+    AbPair {
+        ts: i64,
+        run_id: String,
+        pair_id: String,
+        market_id: String,
+        asset: String,
+        horizon: String,
+        condition_id: String,
+        state_seq: i64,
+        observed_at_ms: i64,
+        status: String,
+        control_ok: i64,
+        quant_ok: i64,
+    },
+    /// One paper fill from a variant-owned paper book. Never a live fill.
+    PaperFill {
+        ts: i64,
+        order_id: i64,
+        condition_id: String,
+        variant: Variant,
+        side: String,
+        price: f64,
+        size: f64,
+        filled_at_ms: i64,
+        maker: i64,
+        tags: ExperimentTags,
+    },
+    /// One sampled paper-equity row for a variant portfolio.
+    ///
+    /// `position` is open YES shares; PnL is in price-points x size, the same
+    /// unit as the replay [`crate::replay::Portfolio`]. `exposure` is open
+    /// inventory at its average entry cost, independent of whether a mid is
+    /// available for `unrealized_pnl`.
+    PaperEquity {
+        ts: i64,
+        condition_id: String,
+        variant: Variant,
+        position: f64,
+        realized_pnl: f64,
+        unrealized_pnl: f64,
+        total_pnl: f64,
+        exposure: f64,
+        tags: ExperimentTags,
+    },
+    /// One forward drift observation for a usable Jev evaluation, QUOTE or
+    /// SKIP (SIGNAL RESEARCH). `ref_price` is the eval-time mid; `mo_*_pp`
+    /// are BUY-signed drift in percentage points. Maker execution labels live
+    /// in `MakerMarkout`; join the two datasets by `pair_id` + `variant`.
+    SignalMarkout {
+        ts: i64,
+        condition_id: String,
+        variant: Variant,
+        jev_ts: i64,
+        ref_price: f64,
+        mid_1s: f64,
+        mid_5s: f64,
+        mid_10s: f64,
+        mid_30s: f64,
+        mid_60s: f64,
+        mo_1s_pp: f64,
+        mo_5s_pp: f64,
+        mo_10s_pp: f64,
+        mo_30s_pp: f64,
+        mo_60s_pp: f64,
+        tags: ExperimentTags,
     },
 }
 
@@ -178,9 +290,11 @@ impl StorageEvent {
     ///
     /// The Jev client currently does not expose usage, so this helper stores
     /// `tokens_in` and `tokens_out` as zero until the client measures them.
+    /// Production callers pass explicit [`ExperimentTags`]; the legacy
+    /// tag-free form below exists only for unit tests.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub fn jev_signal(
+    pub fn jev_signal_tagged(
         ts: i64,
         condition_id: impl Into<String>,
         state_hash: impl Into<String>,
@@ -190,7 +304,10 @@ impl StorageEvent {
         latency_ms: i64,
         trigger: Trigger,
         variant: Variant,
+        tags: ExperimentTags,
         signal: &V1Signal,
+        tokens_in: u64,
+        tokens_out: u64,
     ) -> Self {
         Self::JevSignal {
             ts,
@@ -215,11 +332,46 @@ impl StorageEvent {
             fill_before_decay: signal.fill_before_decay,
             fill_toxic: signal.fill_toxic,
             latency_ms,
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in: tokens_in as i64,
+            tokens_out: tokens_out as i64,
             trigger: trigger.as_str().to_owned(),
             variant,
+            tags,
         }
+    }
+
+    /// Test-only Jev signal row with empty [`ExperimentTags`] and zero usage.
+    ///
+    /// Production code must use [`Self::jev_signal_tagged`].
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn jev_signal(
+        ts: i64,
+        condition_id: impl Into<String>,
+        state_hash: impl Into<String>,
+        state_json: impl Into<String>,
+        questions_json: impl Into<String>,
+        state_seq: i64,
+        latency_ms: i64,
+        trigger: Trigger,
+        variant: Variant,
+        signal: &V1Signal,
+    ) -> Self {
+        Self::jev_signal_tagged(
+            ts,
+            condition_id,
+            state_hash,
+            state_json,
+            questions_json,
+            state_seq,
+            latency_ms,
+            trigger,
+            variant,
+            ExperimentTags::default(),
+            signal,
+            0,
+            0,
+        )
     }
 }
 
@@ -519,12 +671,18 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
             tokens_out,
             trigger,
             variant,
+            tags,
         } => {
             buffer
                 .table("jev_signals")?
                 .symbol("condition_id", condition_id)?
                 .symbol("trigger", trigger)?
                 .symbol("variant", variant.as_str())?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
                 .column_i64("state_seq", *state_seq)?
                 .column_str("state_hash", state_hash)?
                 .column_str("state_json", state_json)?
@@ -560,12 +718,18 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
             paper_price,
             size,
             fair_value,
+            tags,
         } => {
             buffer
                 .table("paper_decisions")?
                 .symbol("condition_id", condition_id)?
                 .symbol("decision", decision)?
                 .symbol("variant", variant.as_str())?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
                 .column_ts("jev_ts", TimestampMicros::new(*jev_ts))?
                 .column_f64("edge", *edge)?
                 .column_f64("threshold", *threshold)?
@@ -605,12 +769,18 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
             pnl_10s_pp,
             pnl_30s_pp,
             pnl_60s_pp,
+            tags,
         } => {
             buffer
                 .table("maker_markouts")?
                 .symbol("condition_id", condition_id)?
                 .symbol("side", side)?
                 .symbol("variant", variant.as_str())?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
                 .column_ts("jev_ts", TimestampMicros::new(*jev_ts))?
                 .column_f64("price", *price)?
                 .column_f64("size", *size)?
@@ -626,6 +796,132 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
                 .column_f64("pnl_60s_pp", *pnl_60s_pp)?
                 .at(TimestampMicros::new(*ts))?;
         }
+        StorageEvent::AbPair {
+            ts,
+            run_id,
+            pair_id,
+            market_id,
+            asset,
+            horizon,
+            condition_id,
+            state_seq,
+            observed_at_ms,
+            status,
+            control_ok,
+            quant_ok,
+        } => {
+            buffer
+                .table("ab_pairs")?
+                .symbol("run_id", run_id)?
+                .symbol("pair_id", pair_id)?
+                .symbol("market_id", market_id)?
+                .symbol("asset", asset)?
+                .symbol("horizon", horizon)?
+                .symbol("condition_id", condition_id)?
+                .symbol("status", status)?
+                .column_i64("state_seq", *state_seq)?
+                .column_i64("observed_at_ms", *observed_at_ms)?
+                .column_i64("control_ok", *control_ok)?
+                .column_i64("quant_ok", *quant_ok)?
+                .at(TimestampMicros::new(*ts))?;
+        }
+        StorageEvent::PaperFill {
+            ts,
+            order_id,
+            condition_id,
+            variant,
+            side,
+            price,
+            size,
+            filled_at_ms,
+            maker,
+            tags,
+        } => {
+            buffer
+                .table("paper_fills")?
+                .symbol("condition_id", condition_id)?
+                .symbol("variant", variant.as_str())?
+                .symbol("side", side)?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
+                .column_i64("order_id", *order_id)?
+                .column_f64("price", *price)?
+                .column_f64("size", *size)?
+                .column_i64("filled_at_ms", *filled_at_ms)?
+                .column_i64("maker", *maker)?
+                .at(TimestampMicros::new(*ts))?;
+        }
+        StorageEvent::PaperEquity {
+            ts,
+            condition_id,
+            variant,
+            position,
+            realized_pnl,
+            unrealized_pnl,
+            total_pnl,
+            exposure,
+            tags,
+        } => {
+            buffer
+                .table("paper_equity")?
+                .symbol("condition_id", condition_id)?
+                .symbol("variant", variant.as_str())?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
+                .column_f64("position", *position)?
+                .column_f64("realized_pnl", *realized_pnl)?
+                .column_f64("unrealized_pnl", *unrealized_pnl)?
+                .column_f64("total_pnl", *total_pnl)?
+                .column_f64("exposure", *exposure)?
+                .at(TimestampMicros::new(*ts))?;
+        }
+        StorageEvent::SignalMarkout {
+            ts,
+            condition_id,
+            variant,
+            jev_ts,
+            ref_price,
+            mid_1s,
+            mid_5s,
+            mid_10s,
+            mid_30s,
+            mid_60s,
+            mo_1s_pp,
+            mo_5s_pp,
+            mo_10s_pp,
+            mo_30s_pp,
+            mo_60s_pp,
+            tags,
+        } => {
+            buffer
+                .table("signal_markouts")?
+                .symbol("condition_id", condition_id)?
+                .symbol("variant", variant.as_str())?
+                .symbol("run_id", &tags.run_id)?
+                .symbol("pair_id", &tags.pair_id)?
+                .symbol("market_id", &tags.market_id)?
+                .symbol("asset", &tags.asset)?
+                .symbol("horizon", &tags.horizon)?
+                .column_ts("jev_ts", TimestampMicros::new(*jev_ts))?
+                .column_f64("ref_price", *ref_price)?
+                .column_f64("mid_1s", *mid_1s)?
+                .column_f64("mid_5s", *mid_5s)?
+                .column_f64("mid_10s", *mid_10s)?
+                .column_f64("mid_30s", *mid_30s)?
+                .column_f64("mid_60s", *mid_60s)?
+                .column_f64("mo_1s_pp", *mo_1s_pp)?
+                .column_f64("mo_5s_pp", *mo_5s_pp)?
+                .column_f64("mo_10s_pp", *mo_10s_pp)?
+                .column_f64("mo_30s_pp", *mo_30s_pp)?
+                .column_f64("mo_60s_pp", *mo_60s_pp)?
+                .at(TimestampMicros::new(*ts))?;
+        }
     }
 
     Ok(())
@@ -635,7 +931,10 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
 mod tests {
     use std::{sync::mpsc as std_mpsc, thread, time::Duration};
 
-    use super::{MetricsInner, QuestDbHandle, StorageEvent, StorageSendResult, Variant, build_row};
+    use super::{
+        ExperimentTags, MetricsInner, QuestDbHandle, StorageEvent, StorageSendResult, Variant,
+        build_row,
+    };
     use crate::{
         domain::Trigger,
         jev::{TickDistribution, V1Signal},
@@ -746,6 +1045,139 @@ mod tests {
     }
 
     #[test]
+    fn tagged_rows_carry_run_pair_and_contract_dimensions() {
+        let signal = V1Signal {
+            yes_pressure_5s: 0.5,
+            no_pressure_5s: 0.5,
+            move_persists: 0.5,
+            underreact_up: 0.5,
+            underreact_down: 0.5,
+            repricing: TickDistribution {
+                up_3_plus: 0.1,
+                up_2: 0.1,
+                up_1: 0.2,
+                flat: 0.2,
+                down_1: 0.2,
+                down_2: 0.1,
+                down_3_plus: 0.1,
+            },
+            repricing_confidence: 0.5,
+            fill_before_decay: 0.5,
+            fill_toxic: 0.5,
+        };
+        let tags = ExperimentTags::new("run-9", "pair-9", "ETH-1h", "ETH", "1h");
+        let row = row_text(&StorageEvent::jev_signal_tagged(
+            2_000_000,
+            "condition-9",
+            "hash",
+            "{}",
+            "{}",
+            3,
+            50,
+            Trigger::SpotMove,
+            Variant::Control,
+            tags.clone(),
+            &signal,
+            1_234,
+            567,
+        ));
+        for dimension in [
+            "run_id=run-9",
+            "pair_id=pair-9",
+            "market_id=ETH-1h",
+            "asset=ETH",
+            "horizon=1h",
+            "tokens_in=1234i",
+            "tokens_out=567i",
+        ] {
+            assert!(row.contains(dimension), "missing {dimension} in {row}");
+        }
+
+        let pair_row = row_text(&StorageEvent::AbPair {
+            ts: 2_000_000,
+            run_id: "run-9".to_owned(),
+            pair_id: "pair-9".to_owned(),
+            market_id: "ETH-1h".to_owned(),
+            asset: "ETH".to_owned(),
+            horizon: "1h".to_owned(),
+            condition_id: "condition-9".to_owned(),
+            state_seq: 3,
+            observed_at_ms: 2_000,
+            status: "incomplete".to_owned(),
+            control_ok: 1,
+            quant_ok: 0,
+        });
+        assert!(pair_row.starts_with("ab_pairs,run_id=run-9,pair_id=pair-9"));
+        assert!(pair_row.contains("status=incomplete"));
+        assert!(pair_row.contains("control_ok=1i"));
+        assert!(pair_row.contains("quant_ok=0i"));
+
+        let fill_row = row_text(&StorageEvent::PaperFill {
+            ts: 2_001_000,
+            order_id: 7,
+            condition_id: "condition-9".to_owned(),
+            variant: Variant::QuantV1,
+            side: "BUY".to_owned(),
+            price: 0.44,
+            size: 10.0,
+            filled_at_ms: 2_001,
+            maker: 1,
+            tags: tags.clone(),
+        });
+        assert!(fill_row.starts_with("paper_fills,condition_id=condition-9"));
+        assert!(fill_row.contains("variant=QUANT_V1"));
+        assert!(fill_row.contains("order_id=7i"));
+        assert!(fill_row.contains("pair_id=pair-9"));
+
+        let equity_row = row_text(&StorageEvent::PaperEquity {
+            ts: 2_002_000,
+            condition_id: "condition-9".to_owned(),
+            variant: Variant::QuantV1,
+            position: 10.0,
+            realized_pnl: 0.0,
+            unrealized_pnl: 20.0,
+            total_pnl: 20.0,
+            exposure: 10.0,
+            tags: tags.clone(),
+        });
+        assert!(equity_row.starts_with("paper_equity,condition_id=condition-9"));
+        assert!(equity_row.contains("total_pnl=20"));
+        assert!(equity_row.contains("market_id=ETH-1h"));
+    }
+
+    #[test]
+    fn signal_markouts_map_drift_columns_and_dimensions() {
+        let tags = ExperimentTags::new("run-9", "pair-9", "ETH-1h", "ETH", "1h");
+        let row = row_text(&StorageEvent::SignalMarkout {
+            ts: 2_003_000,
+            condition_id: "condition-9".to_owned(),
+            variant: Variant::Control,
+            jev_ts: 2_000_000,
+            ref_price: 0.41,
+            mid_1s: 0.42,
+            mid_5s: 0.43,
+            mid_10s: 0.44,
+            mid_30s: 0.45,
+            mid_60s: 0.46,
+            mo_1s_pp: 1.0,
+            mo_5s_pp: 2.0,
+            mo_10s_pp: 3.0,
+            mo_30s_pp: 4.0,
+            mo_60s_pp: 5.0,
+            tags,
+        });
+
+        assert!(row.starts_with("signal_markouts,condition_id=condition-9"));
+        assert!(row.contains("variant=CONTROL"));
+        assert!(row.contains("ref_price=0.41"));
+        assert!(row.contains("mo_5s_pp=2"));
+        assert!(row.contains("pair_id=pair-9"));
+        assert!(row.contains("market_id=ETH-1h"));
+        assert!(row.contains("asset=ETH"));
+        assert!(row.contains("horizon=1h"));
+    }
+
+    #[test]
     fn maker_markouts_map_all_horizons_and_pnls() {
         let row = row_text(&StorageEvent::MakerMarkout {
             ts: 3_000_000,
@@ -765,10 +1197,16 @@ mod tests {
             pnl_10s_pp: 4.0,
             pnl_30s_pp: 5.0,
             pnl_60s_pp: 6.0,
+            tags: ExperimentTags::new("run-1", "pair-1", "BTC-5m", "BTC", "5m"),
         });
 
         assert!(row.starts_with("maker_markouts,condition_id=condition-3,side=BUY"));
         assert!(row.contains("variant=CONTROL"));
+        assert!(row.contains("run_id=run-1"));
+        assert!(row.contains("pair_id=pair-1"));
+        assert!(row.contains("market_id=BTC-5m"));
+        assert!(row.contains("asset=BTC"));
+        assert!(row.contains("horizon=5m"));
         for field in [
             "price=0.4",
             "size=10",

@@ -13,12 +13,20 @@ use serde::{Deserialize, Serialize};
 
 /// Deterministic features Rust computes from external venues.
 /// Jev never sees raw ticks, only this judged-ready summary.
+///
+/// Horizon-extension rule (multi-market stage): new temporal fields are
+/// purely additive and default to `0.0`/`0`/`""` when the caller has no data
+/// for that horizon. Thresholds and the 8 Jev questions never change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeadLagFeatures {
     // -- Resolution --
     pub target: f64,
     pub time_remaining_secs: u64,
     pub resolution_source: String,
+    // -- Contract (which of the 8 markets this snapshot belongs to) --
+    pub asset_symbol: String,
+    pub horizon_label: String,
+    pub horizon_secs: u64,
     // -- Underlying --
     pub spot: f64,
     pub distance_to_target_pct: f64,
@@ -26,9 +34,14 @@ pub struct LeadLagFeatures {
     pub ret_1s_pct: f64,
     pub ret_5s_pct: f64,
     pub ret_30s_pct: f64,
+    pub ret_1m_pct: f64,
     pub ret_5m_pct: f64,
+    pub ret_15m_pct: f64,
+    pub ret_30m_pct: f64,
+    pub ret_1h_pct: f64,
     pub realized_vol_1m_pct: f64,
     pub realized_vol_5m_pct: f64,
+    pub realized_vol_1h_pct: f64,
     pub binance_microprice: f64,
     pub coinbase_microprice: f64,
     pub perp_price: f64,

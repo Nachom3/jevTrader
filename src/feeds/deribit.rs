@@ -14,12 +14,34 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::types::{FeedError, Venue, VenueTick};
+use crate::domain::Asset;
 
 /// Deribit public WebSocket API endpoint.
 pub const DEFAULT_WS_URL: &str = "wss://www.deribit.com/ws/api/v2";
 /// Channels subscribed to by [`DeribitFeed`].
 pub const SUBSCRIPTION_CHANNELS: [&str; 2] = ["ticker.BTC-PERPETUAL", "trades.BTC-PERPETUAL"];
 const INSTRUMENT: &str = "BTC-PERPETUAL";
+/// ETH perpetual instrument shared by Deribit subscriptions, checks, and ticks.
+pub const ETH_INSTRUMENT: &str = "ETH-PERPETUAL";
+
+/// Deribit instrument for one asset.
+#[must_use]
+pub const fn instrument(asset: Asset) -> &'static str {
+    match asset {
+        Asset::Btc => INSTRUMENT,
+        Asset::Eth => ETH_INSTRUMENT,
+    }
+}
+
+/// Subscription channels for one asset's ticker and trades streams.
+#[must_use]
+pub fn channels_for(asset: Asset) -> [String; 2] {
+    let instrument = instrument(asset);
+    [
+        format!("ticker.{instrument}"),
+        format!("trades.{instrument}"),
+    ]
+}
 
 /// Runtime policy for Deribit connection retries.
 ///
@@ -49,6 +71,7 @@ impl Default for DeribitFeedConfig {
 #[derive(Debug, Clone)]
 pub struct DeribitFeed {
     config: DeribitFeedConfig,
+    asset: Asset,
 }
 
 impl DeribitFeed {
@@ -56,19 +79,36 @@ impl DeribitFeed {
     /// limits.
     #[must_use]
     pub fn new() -> Self {
+        Self::for_asset(Asset::Btc)
+    }
+
+    /// Creates a feed for one asset (one connection per venue + asset, shared
+    /// by all horizons of that asset).
+    #[must_use]
+    pub fn for_asset(asset: Asset) -> Self {
         Self {
             config: DeribitFeedConfig::default(),
+            asset,
         }
     }
 
-    /// Creates a feed with an explicit endpoint and bounded retry policy.
+    /// Returns the asset this feed subscribes to.
+    #[must_use]
+    pub const fn asset(&self) -> Asset {
+        self.asset
+    }
+
+    /// Creates a BTC feed with an explicit endpoint and bounded retry policy.
     pub fn with_config(config: DeribitFeedConfig) -> Result<Self, FeedError> {
         if config.endpoint.trim().is_empty() {
             return Err(FeedError::Connect(
                 "Deribit WebSocket URL is empty".to_owned(),
             ));
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            asset: Asset::Btc,
+        })
     }
 
     /// Runs the feed into a normalized tick channel until the retry budget is
@@ -97,14 +137,14 @@ impl DeribitFeed {
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
         socket
-            .send(Message::Text(subscription_message().into()))
+            .send(Message::Text(subscription_message_for(self.asset).into()))
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
 
         while let Some(message) = socket.next().await {
             match message.map_err(|error| FeedError::Connect(error.to_string()))? {
                 Message::Text(payload) => {
-                    for tick in parse_message(payload.as_ref())? {
+                    for tick in parse_message_for(payload.as_ref(), self.asset)? {
                         sender.send(tick).await.map_err(|_| {
                             FeedError::Connect("Deribit tick consumer dropped".to_owned())
                         })?;
@@ -146,12 +186,13 @@ impl Default for DeribitFeed {
     }
 }
 
-fn subscription_message() -> String {
+/// Subscription message for one asset's ticker and trades channels.
+pub fn subscription_message_for(asset: Asset) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "public/subscribe",
-        "params": { "channels": SUBSCRIPTION_CHANNELS },
+        "params": { "channels": channels_for(asset) },
     })
     .to_string()
 }
@@ -162,6 +203,12 @@ fn subscription_message() -> String {
 /// A ticker payload produces one tick; a trade notification may produce one
 /// tick per item in its `data` array.
 pub fn parse_message(payload: &str) -> Result<Vec<VenueTick>, FeedError> {
+    parse_message_for(payload, Asset::Btc)
+}
+
+/// Parses one payload for the given asset's instrument.
+pub fn parse_message_for(payload: &str, asset: Asset) -> Result<Vec<VenueTick>, FeedError> {
+    let expected = instrument(asset);
     let value: Value = serde_json::from_str(payload)
         .map_err(|error| FeedError::Parse(format!("invalid Deribit JSON: {error}")))?;
     if value.get("method").and_then(Value::as_str) != Some("subscription") {
@@ -179,28 +226,31 @@ pub fn parse_message(payload: &str) -> Result<Vec<VenueTick>, FeedError> {
         .get("data")
         .ok_or_else(|| FeedError::Parse("Deribit subscription data is missing".to_owned()))?;
 
-    if channel == "ticker.BTC-PERPETUAL" {
-        return Ok(vec![parse_ticker(data)?]);
+    if channel == format!("ticker.{expected}") {
+        return Ok(vec![parse_ticker(data, expected)?]);
     }
-    if channel == "trades.BTC-PERPETUAL" {
+    if channel == format!("trades.{expected}") {
         let trades = data
             .as_array()
             .ok_or_else(|| FeedError::Parse("Deribit trades data is not an array".to_owned()))?;
-        return trades.iter().map(parse_trade).collect();
+        return trades
+            .iter()
+            .map(|trade| parse_trade(trade, expected))
+            .collect();
     }
 
     Ok(Vec::new())
 }
 
-fn parse_ticker(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_instrument(value)?;
+fn parse_ticker(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_instrument(value, expected)?;
     let best_bid = optional_number_field(value, "best_bid_price")?.unwrap_or(f64::NAN);
     let best_ask = optional_number_field(value, "best_ask_price")?.unwrap_or(f64::NAN);
     let price = number_field(value, "last_price")?;
 
     Ok(VenueTick {
         venue: Venue::Deribit,
-        symbol: INSTRUMENT,
+        symbol: expected,
         price_f64: price,
         best_bid_f64: best_bid,
         best_ask_f64: best_ask,
@@ -211,8 +261,8 @@ fn parse_ticker(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_instrument(value)?;
+fn parse_trade(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_instrument(value, expected)?;
     let trade_side_buy = match value
         .get("direction")
         .and_then(Value::as_str)
@@ -229,7 +279,7 @@ fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
 
     Ok(VenueTick {
         venue: Venue::Deribit,
-        symbol: INSTRUMENT,
+        symbol: expected,
         price_f64: number_field(value, "price")?,
         best_bid_f64: f64::NAN,
         best_ask_f64: f64::NAN,
@@ -240,12 +290,12 @@ fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn ensure_instrument(value: &Value) -> Result<(), FeedError> {
+fn ensure_instrument(value: &Value, expected: &'static str) -> Result<(), FeedError> {
     let instrument = value
         .get("instrument_name")
         .and_then(Value::as_str)
         .ok_or_else(|| FeedError::Parse("Deribit instrument_name is missing".to_owned()))?;
-    if instrument != INSTRUMENT {
+    if instrument != expected {
         return Err(FeedError::Parse(format!(
             "unexpected Deribit instrument `{instrument}`"
         )));
@@ -358,5 +408,25 @@ mod tests {
         assert!(tick.trade_side_buy);
         assert_eq!(tick.ts_exchange_ms, 1_700_000_000_456);
         assert!(tick.best_bid_f64.is_nan());
+    }
+
+    #[test]
+    fn parses_eth_ticker_payload() {
+        let payload = r#"{
+            "jsonrpc":"2.0","method":"subscription","params":{
+                "channel":"ticker.ETH-PERPETUAL","data":{
+                    "timestamp":1700000000123,"last_price":2200.5,
+                    "best_bid_price":2200.0,"best_ask_price":2201.0,
+                    "instrument_name":"ETH-PERPETUAL"
+                }
+            }
+        }"#;
+
+        let ticks = super::parse_message_for(payload, crate::domain::Asset::Eth).unwrap();
+        let tick = ticks[0];
+        assert_eq!(tick.symbol, super::ETH_INSTRUMENT);
+        assert_eq!(tick.price_f64, 2200.5);
+        assert_eq!(tick.best_bid_f64, 2200.0);
+        assert_eq!(tick.best_ask_f64, 2201.0);
     }
 }

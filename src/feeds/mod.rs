@@ -3,6 +3,7 @@
 pub mod binance;
 pub mod coinbase;
 pub mod deribit;
+pub mod shared;
 pub mod types;
 
 pub use binance::{
@@ -18,4 +19,5 @@ pub use deribit::{
     DEFAULT_WS_URL as DERIBIT_WS_URL, DeribitFeed, DeribitFeedConfig,
     SUBSCRIPTION_CHANNELS as DERIBIT_SUBSCRIPTION_CHANNELS, parse_message as parse_deribit_message,
 };
+pub use shared::{AssetFeedState, SharedFeeds};
 pub use types::{FeedError, Venue, VenueTick};

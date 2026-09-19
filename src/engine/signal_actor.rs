@@ -214,6 +214,8 @@ mod tests {
             received_at_ms: 1_000 + latency_ms as i64,
             latency_ms,
             signal: synthetic_signal(),
+            tokens_in: 0,
+            tokens_out: 0,
         }
     }
 

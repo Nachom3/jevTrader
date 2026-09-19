@@ -1,4 +1,4 @@
-//! Binance spot WebSocket adapter for BTCUSDT.
+//! Binance spot WebSocket adapter for BTC and ETH pairs.
 //!
 //! The adapter subscribes to the public `trade` and `bookTicker` streams. A
 //! trade event has no quote attached, so its bid and ask are `f64::NAN`. A
@@ -14,12 +14,31 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::types::{FeedError, Venue, VenueTick};
+use crate::domain::Asset;
 
 /// Binance combined-stream endpoint used by this feed.
 pub const DEFAULT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
-/// Channels subscribed to by [`BinanceFeed`].
+/// Channels subscribed to by the default ([`Asset::Btc`]) [`BinanceFeed`].
 pub const SUBSCRIPTION_CHANNELS: [&str; 2] = ["btcusdt@trade", "btcusdt@bookTicker"];
 const SYMBOL: &str = "BTCUSDT";
+/// ETH spot symbol shared by streams, checks, and normalized ticks.
+pub const ETH_SYMBOL: &str = "ETHUSDT";
+
+/// Binance stream symbol for one asset.
+#[must_use]
+pub const fn stream_symbol(asset: Asset) -> &'static str {
+    match asset {
+        Asset::Btc => SYMBOL,
+        Asset::Eth => ETH_SYMBOL,
+    }
+}
+
+/// Subscription channels for one asset (`<symbol>@trade`, `<symbol>@bookTicker`).
+#[must_use]
+pub fn channels_for(asset: Asset) -> [String; 2] {
+    let base = stream_symbol(asset).to_ascii_lowercase();
+    [format!("{base}@trade"), format!("{base}@bookTicker")]
+}
 
 /// Runtime policy for Binance connection retries.
 ///
@@ -49,16 +68,31 @@ impl Default for BinanceFeedConfig {
 #[derive(Debug, Clone)]
 pub struct BinanceFeed {
     config: BinanceFeedConfig,
+    asset: Asset,
 }
 
 impl BinanceFeed {
-    /// Creates a feed with the production Binance public endpoint and retry
-    /// limits.
+    /// Creates a BTC feed with the production Binance public endpoint and
+    /// retry limits.
     #[must_use]
     pub fn new() -> Self {
+        Self::for_asset(Asset::Btc)
+    }
+
+    /// Creates a feed for one asset (one connection per venue + asset, shared
+    /// by all horizons of that asset).
+    #[must_use]
+    pub fn for_asset(asset: Asset) -> Self {
         Self {
             config: BinanceFeedConfig::default(),
+            asset,
         }
+    }
+
+    /// Returns the asset this feed subscribes to.
+    #[must_use]
+    pub const fn asset(&self) -> Asset {
+        self.asset
     }
 
     /// Creates a feed with an explicit endpoint and bounded retry policy.
@@ -68,7 +102,10 @@ impl BinanceFeed {
                 "Binance WebSocket URL is empty".to_owned(),
             ));
         }
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            asset: Asset::Btc,
+        })
     }
 
     /// Runs the feed into a normalized tick channel until the retry budget is
@@ -96,15 +133,16 @@ impl BinanceFeed {
         let (mut socket, _) = connect_async(&self.config.endpoint)
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
+        let subscribe = subscription_message_for(self.asset);
         socket
-            .send(Message::Text(subscription_message().into()))
+            .send(Message::Text(subscribe.into()))
             .await
             .map_err(|error| FeedError::Connect(error.to_string()))?;
 
         while let Some(message) = socket.next().await {
             match message.map_err(|error| FeedError::Connect(error.to_string()))? {
                 Message::Text(payload) => {
-                    for tick in parse_message(payload.as_ref())? {
+                    for tick in parse_message_for(payload.as_ref(), self.asset)? {
                         sender.send(tick).await.map_err(|_| {
                             FeedError::Connect("Binance tick consumer dropped".to_owned())
                         })?;
@@ -146,10 +184,11 @@ impl Default for BinanceFeed {
     }
 }
 
-fn subscription_message() -> String {
+/// Subscription message for one asset's trade + bookTicker streams.
+pub fn subscription_message_for(asset: Asset) -> String {
     serde_json::json!({
         "method": "SUBSCRIBE",
-        "params": SUBSCRIPTION_CHANNELS,
+        "params": channels_for(asset),
         "id": 1,
     })
     .to_string()
@@ -160,24 +199,30 @@ fn subscription_message() -> String {
 /// Subscription acknowledgements and unrelated control messages produce an
 /// empty vector. Relevant trade and book-ticker payloads produce one tick.
 pub fn parse_message(payload: &str) -> Result<Vec<VenueTick>, FeedError> {
+    parse_message_for(payload, Asset::Btc)
+}
+
+/// Parses one payload for the given asset's symbol.
+pub fn parse_message_for(payload: &str, asset: Asset) -> Result<Vec<VenueTick>, FeedError> {
+    let expected = stream_symbol(asset);
     let value: Value = serde_json::from_str(payload)
         .map_err(|error| FeedError::Parse(format!("invalid Binance JSON: {error}")))?;
     match value.get("e").and_then(Value::as_str) {
-        Some("trade") => Ok(vec![parse_trade(&value)?]),
-        Some("bookTicker") => Ok(vec![parse_book_ticker(&value)?]),
+        Some("trade") => Ok(vec![parse_trade(&value, expected)?]),
+        Some("bookTicker") => Ok(vec![parse_book_ticker(&value, expected)?]),
         Some(_) => Ok(Vec::new()),
         None if value.get("s").is_some()
             && value.get("b").is_some()
             && value.get("a").is_some() =>
         {
-            Ok(vec![parse_book_ticker(&value)?])
+            Ok(vec![parse_book_ticker(&value, expected)?])
         }
         None => Ok(Vec::new()),
     }
 }
 
-fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_symbol(value)?;
+fn parse_trade(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_symbol(value, expected)?;
     let price = number_field(value, "p")?;
     let size = number_field(value, "q")?;
     let exchange_timestamp = integer_field(value, "T")?;
@@ -188,7 +233,7 @@ fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
 
     Ok(VenueTick {
         venue: Venue::Binance,
-        symbol: SYMBOL,
+        symbol: expected,
         price_f64: price,
         best_bid_f64: f64::NAN,
         best_ask_f64: f64::NAN,
@@ -199,8 +244,8 @@ fn parse_trade(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn parse_book_ticker(value: &Value) -> Result<VenueTick, FeedError> {
-    ensure_symbol(value)?;
+fn parse_book_ticker(value: &Value, expected: &'static str) -> Result<VenueTick, FeedError> {
+    ensure_symbol(value, expected)?;
     let bid = number_field(value, "b")?;
     let ask = number_field(value, "a")?;
     // The raw Binance bookTicker stream omits an exchange timestamp. Keep
@@ -215,7 +260,7 @@ fn parse_book_ticker(value: &Value) -> Result<VenueTick, FeedError> {
 
     Ok(VenueTick {
         venue: Venue::Binance,
-        symbol: SYMBOL,
+        symbol: expected,
         price_f64: (bid + ask) / 2.0,
         best_bid_f64: bid,
         best_ask_f64: ask,
@@ -226,12 +271,12 @@ fn parse_book_ticker(value: &Value) -> Result<VenueTick, FeedError> {
     })
 }
 
-fn ensure_symbol(value: &Value) -> Result<(), FeedError> {
+fn ensure_symbol(value: &Value, expected: &'static str) -> Result<(), FeedError> {
     let symbol = value
         .get("s")
         .and_then(Value::as_str)
         .ok_or_else(|| FeedError::Parse("Binance symbol is missing".to_owned()))?;
-    if symbol != SYMBOL {
+    if symbol != expected {
         return Err(FeedError::Parse(format!(
             "unexpected Binance symbol `{symbol}`"
         )));
@@ -332,5 +377,20 @@ mod tests {
         assert_eq!(tick.trade_size_f64, 0.0);
         assert!(!tick.trade_side_buy);
         assert_eq!(tick.ts_exchange_ms, 1_700_000_000_789);
+    }
+
+    #[test]
+    fn parses_eth_book_ticker_payload() {
+        let payload = r#"{
+            "u":500900217,"s":"ETHUSDT","b":"2200.10","B":"1.2",
+            "a":"2200.30","A":"0.8","T":1700000000789
+        }"#;
+
+        let ticks = super::parse_message_for(payload, crate::domain::Asset::Eth).unwrap();
+        let tick = ticks[0];
+        assert_eq!(tick.symbol, super::ETH_SYMBOL);
+        assert_eq!(tick.price_f64, 2200.20);
+        assert_eq!(tick.best_bid_f64, 2200.10);
+        assert_eq!(tick.best_ask_f64, 2200.30);
     }
 }

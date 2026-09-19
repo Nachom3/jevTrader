@@ -130,12 +130,71 @@ where
     build_features_with_context(recent_ticks, &context, venues, order_flow)
 }
 
+/// Which of the 8 contracts a feature snapshot belongs to.
+///
+/// Pure metadata: it labels the state Jev sees (asset, horizon, window) but
+/// never changes thresholds or questions. `Default` is the unknown contract
+/// (empty labels, zero window); builders then emit `0.0`/`""` horizon fields.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContractContext {
+    pub asset_symbol: String,
+    pub horizon_label: String,
+    pub horizon_secs: u64,
+}
+
+impl ContractContext {
+    /// Creates an explicit contract label (e.g. `("BTC", "5m", 300)`).
+    #[must_use]
+    pub fn new(
+        asset_symbol: impl Into<String>,
+        horizon_label: impl Into<String>,
+        horizon_secs: u64,
+    ) -> Self {
+        Self {
+            asset_symbol: asset_symbol.into(),
+            horizon_label: horizon_label.into(),
+            horizon_secs,
+        }
+    }
+
+    /// Builds the label from domain types without importing them here.
+    #[must_use]
+    pub fn from_parts(asset: &str, horizon: &str, horizon_secs: u64) -> Self {
+        Self::new(asset, horizon, horizon_secs)
+    }
+}
+
 /// Canonical pure feature builder for callers that already own the resolution
 /// context and do not need the legacy Polymarket argument.
+///
+/// Contract labeling defaults to unknown; use [`build_features_full`] when
+/// the asset/horizon are known.
 #[must_use]
 pub fn build_features_with_context(
     recent_ticks: &[ExternalTick],
     context: &ResolutionContext,
+    venues: VenueMicroprices,
+    order_flow: OrderFlowAggregates,
+) -> LeadLagFeatures {
+    build_features_full(
+        recent_ticks,
+        context,
+        &ContractContext::default(),
+        venues,
+        order_flow,
+    )
+}
+
+/// Full pure feature builder: resolution context plus contract label.
+///
+/// Longer horizons (`15m`/`30m`/`1h`, `vol_1h`) need longer tick retention;
+/// when the caller history is too short those fields are the documented
+/// `0.0` rather than extrapolated values. No clock or I/O is used.
+#[must_use]
+pub fn build_features_full(
+    recent_ticks: &[ExternalTick],
+    context: &ResolutionContext,
+    contract: &ContractContext,
     venues: VenueMicroprices,
     order_flow: OrderFlowAggregates,
 ) -> LeadLagFeatures {
@@ -161,15 +220,23 @@ pub fn build_features_with_context(
         target: finite_or_zero(context.target),
         time_remaining_secs: context.time_remaining_secs,
         resolution_source: context.resolution_source.clone(),
+        asset_symbol: contract.asset_symbol.clone(),
+        horizon_label: contract.horizon_label.clone(),
+        horizon_secs: contract.horizon_secs,
         spot,
         distance_to_target_pct: relative_difference(spot, context.target),
         ret_250ms_pct: ret(250),
         ret_1s_pct: ret(1_000),
         ret_5s_pct: ret(5_000),
         ret_30s_pct: ret(30_000),
+        ret_1m_pct: ret(60_000),
         ret_5m_pct: ret(300_000),
+        ret_15m_pct: ret(900_000),
+        ret_30m_pct: ret(1_800_000),
+        ret_1h_pct: ret(3_600_000),
         realized_vol_1m_pct: realized_vol(60),
         realized_vol_5m_pct: realized_vol(300),
+        realized_vol_1h_pct: realized_vol(3_600),
         binance_microprice: finite_or_zero(venues.binance),
         coinbase_microprice: finite_or_zero(venues.coinbase),
         perp_price: finite_or_zero(venues.perp),
@@ -452,5 +519,67 @@ mod tests {
         assert!((features.binance_coinbase_diff_pct - 1.0).abs() < 1e-12);
         let expected_spot_perp_diff = (100.0 / 102.0 - 1.0) * 100.0;
         assert!((features.spot_perp_diff_pct - expected_spot_perp_diff).abs() < 1e-12);
+    }
+
+    #[test]
+    fn contract_context_labels_features_without_changing_values() {
+        use super::{ContractContext, build_features_full};
+
+        let contract = ContractContext::new("ETH", "1h", 3_600);
+        let features = build_features_full(
+            &flat_ticks(),
+            &ResolutionContext::new(100.0, 900, "Test source"),
+            &contract,
+            venues(),
+            flow(),
+        );
+
+        assert_eq!(features.asset_symbol, "ETH");
+        assert_eq!(features.horizon_label, "1h");
+        assert_eq!(features.horizon_secs, 3_600);
+        assert_eq!(features.spot, 100.0);
+    }
+
+    #[test]
+    fn long_horizons_default_to_zero_without_enough_history() {
+        // 5 minutes of ticks: 1m/5m are computable, 15m/30m/1h are not.
+        let features = build_features(
+            &flat_ticks(),
+            &poly_snapshot(),
+            ResolutionContext::new(100.0, 900, "Test source"),
+            venues(),
+            flow(),
+        );
+
+        assert_eq!(features.ret_15m_pct, 0.0);
+        assert_eq!(features.ret_30m_pct, 0.0);
+        assert_eq!(features.ret_1h_pct, 0.0);
+        assert_eq!(features.realized_vol_1h_pct, 0.0);
+    }
+
+    #[test]
+    fn one_hour_uptrend_is_visible_when_history_covers_it() {
+        use super::{ContractContext, build_features_full};
+
+        let ticks: Vec<ExternalTick> = (0..=3_600_000)
+            .step_by(60_000)
+            .map(|ts_ms| ExternalTick {
+                price: 100.0 + (ts_ms as f64 / 60_000.0) * 0.1,
+                ts_ms: ts_ms as u64,
+            })
+            .collect();
+        let features = build_features_full(
+            &ticks,
+            &ResolutionContext::new(200.0, 3_600, "Test source"),
+            &ContractContext::new("BTC", "1h", 3_600),
+            venues(),
+            flow(),
+        );
+
+        assert!(features.ret_1m_pct > 0.0);
+        assert!(features.ret_15m_pct > 0.0);
+        assert!(features.ret_30m_pct > 0.0);
+        assert!(features.ret_1h_pct > 0.0);
+        assert!(features.ret_1h_pct > features.ret_1m_pct);
     }
 }

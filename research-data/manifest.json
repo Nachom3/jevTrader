@@ -1,0 +1,1205 @@
+{
+  "created_at": "2026-09-19T18:18:15.241280+00:00",
+  "files": [
+    {
+      "dataset": "SII-WANGZJ/Polymarket_data",
+      "original_file": "markets.parquet",
+      "local_path": "research-data/raw/sii/markets.parquet",
+      "downloaded_at": "2026-09-19T18:18:15.417647+00:00",
+      "checksum_sha256": "341f3410c4a8c985382ebbb04df6fb1b20a165a97785c1065507228d714bc883",
+      "file_size_bytes": 294034916,
+      "date_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "selected_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "filters": {
+        "mode": "metadata-full-allowed"
+      },
+      "rows_before": 1841683,
+      "rows_after": 1841683,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "2024_01.parquet",
+      "local_path": "research-data/raw/timeseventeen/2024_01.parquet",
+      "downloaded_at": "2026-09-19T18:22:45.424625+00:00",
+      "checksum_sha256": "ffcb648dc242681572565f582b4e3a89188307cbf46898e0e94f362f52d53345",
+      "file_size_bytes": 2432917,
+      "date_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "selected_range": [
+        "2024_01",
+        "2024_06"
+      ],
+      "filters": {
+        "mode": "monthly-intersect-only"
+      },
+      "rows_before": 114372,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "2024_06.parquet",
+      "local_path": "research-data/raw/timeseventeen/2024_06.parquet",
+      "downloaded_at": "2026-09-19T18:22:45.436709+00:00",
+      "checksum_sha256": "6e6b7f9a63469207ccc3d3d78dc180cc2e1cb092940ebf5c706fef5bd62b7ea3",
+      "file_size_bytes": 13580408,
+      "date_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "selected_range": [
+        "2024_01",
+        "2024_06"
+      ],
+      "filters": {
+        "mode": "monthly-intersect-only"
+      },
+      "rows_before": 639152,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2024-01.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2024-01.zip",
+      "downloaded_at": "2026-09-19T18:23:46.443721+00:00",
+      "checksum_sha256": "40b78258091a468f8756843f207f5913eafc1d6e756c40a78711320d93fa5e75",
+      "file_size_bytes": 2169570,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-aggTrades-2024-01.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-aggTrades-2024-01.zip",
+      "downloaded_at": "2026-09-19T18:23:46.951973+00:00",
+      "checksum_sha256": "6713db84b8836aec43bb52471735b2e057ed2cd8b571d7bdc81672826d8c8a19",
+      "file_size_bytes": 566954365,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2024-04.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2024-04.zip",
+      "downloaded_at": "2026-09-19T18:23:46.958929+00:00",
+      "checksum_sha256": "753040cbfaa72bf9b1fdc6253a3b521a9a174a664dfd0929a556be327b016bc6",
+      "file_size_bytes": 2120723,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2024-07.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2024-07.zip",
+      "downloaded_at": "2026-09-19T18:23:46.961249+00:00",
+      "checksum_sha256": "9cfd749fd2027a0c6f261bed607b49dd1256369fb41b784934544a3676f8162e",
+      "file_size_bytes": 2141506,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2024-10.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2024-10.zip",
+      "downloaded_at": "2026-09-19T18:23:46.963336+00:00",
+      "checksum_sha256": "13f7f9f9bed652fd152422246cfbcaefa6223692c5c37fb3ca4e72f45501e607",
+      "file_size_bytes": 2121607,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2025-01.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2025-01.zip",
+      "downloaded_at": "2026-09-19T18:23:46.965544+00:00",
+      "checksum_sha256": "8d028b2f91aad57d6b693d44449c93f9c4b7044f55f298c8a3ac40ab676dafac",
+      "file_size_bytes": 2222830,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2025-04.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2025-04.zip",
+      "downloaded_at": "2026-09-19T18:23:46.967919+00:00",
+      "checksum_sha256": "4103d48887f9f5ec04144b190314ec31db9e3094674e5d53a3436b338854848f",
+      "file_size_bytes": 2120466,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2024-01.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2024-01.zip",
+      "downloaded_at": "2026-09-19T18:23:46.970068+00:00",
+      "checksum_sha256": "2fb2c9b77365183f77e185de3578de2f3be5fefe433d7c0564f033f968d5e23c",
+      "file_size_bytes": 2050101,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-aggTrades-2024-01.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-aggTrades-2024-01.zip",
+      "downloaded_at": "2026-09-19T18:23:47.028348+00:00",
+      "checksum_sha256": "04123bf033e5a075b2b7108b510078b42b13d22cc67cb79abd86d43fb2b47f0a",
+      "file_size_bytes": 78266368,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2024-04.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2024-04.zip",
+      "downloaded_at": "2026-09-19T18:23:47.065711+00:00",
+      "checksum_sha256": "9c6ef16ea4e0593ac4547d2f6c64c272d8f39806871473c4877885af47a67b88",
+      "file_size_bytes": 2016825,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2024-07.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2024-07.zip",
+      "downloaded_at": "2026-09-19T18:23:47.068503+00:00",
+      "checksum_sha256": "bda530d17235096c0e619edff1bef56154923b980d7a73406ea66114966ba0d2",
+      "file_size_bytes": 2050486,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2024-10.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2024-10.zip",
+      "downloaded_at": "2026-09-19T18:23:47.071553+00:00",
+      "checksum_sha256": "99b11df1d79a2408d639cf512f1cfc6a4df4687de9146bd6271f9489ba15a8ba",
+      "file_size_bytes": 2039885,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2025-01.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2025-01.zip",
+      "downloaded_at": "2026-09-19T18:23:47.074958+00:00",
+      "checksum_sha256": "04ab6131e9f8ad979676b72115a8cfaf7e4f827b06f44cdf80c840d95016766d",
+      "file_size_bytes": 2120787,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2025-04.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2025-04.zip",
+      "downloaded_at": "2026-09-19T18:23:47.077020+00:00",
+      "checksum_sha256": "32505b36565f7c446a3946dc6ea2f511e71d0f72c13cca2b09bb83307f198f8e",
+      "file_size_bytes": 2029272,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-aggTrades-2024-01.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-aggTrades-2024-01.zip",
+      "downloaded_at": "2026-09-19T18:24:06.287284+00:00",
+      "checksum_sha256": "94185c04ebdf87791bb63d1c86a82f6171f35c42fd3dfa03d1c4c6e20dd38a16",
+      "file_size_bytes": 301466173,
+      "date_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "selected_range": [
+        "2024-01",
+        "2024-04",
+        "2024-07",
+        "2024-10",
+        "2025-01",
+        "2025-04"
+      ],
+      "filters": {
+        "kinds": [
+          "klines_1m",
+          "aggTrades"
+        ]
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_aligned selected-days",
+      "local_path": "research-data/processed/polymarket_trades.parquet",
+      "downloaded_at": "2026-09-19T18:38:04.193057+00:00",
+      "checksum_sha256": "c5d501c4a8d6b88fa4836f64041e9911e3f980025a85cf6bdeb406e4a2bd272a",
+      "file_size_bytes": 14192,
+      "date_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "selected_range": [
+        "research-data/raw/timeseventeen/daily_2025_12_15.parquet",
+        "research-data/raw/timeseventeen/daily_2026_01_15.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_27.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_28.parquet"
+      ],
+      "filters": {
+        "primary": "daily_aligned",
+        "monthly_OrderFilled": "validation-only"
+      },
+      "rows_before": 9488210,
+      "rows_after": 147,
+      "market_count": 37
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_aligned selected-days",
+      "local_path": "research-data/processed/polymarket_trades.parquet",
+      "downloaded_at": "2026-09-19T18:41:34.564045+00:00",
+      "checksum_sha256": "ba29ff51b24f796b485546110b05825a16e7b0d8d685a3f279e1103ce2f62d51",
+      "file_size_bytes": 129919,
+      "date_range": [
+        "2024-01-01",
+        "2026-04-28"
+      ],
+      "selected_range": [
+        "research-data/raw/timeseventeen/daily_2024_01_09.parquet",
+        "research-data/raw/timeseventeen/daily_2025_12_15.parquet",
+        "research-data/raw/timeseventeen/daily_2025_12_23.parquet",
+        "research-data/raw/timeseventeen/daily_2025_12_24.parquet",
+        "research-data/raw/timeseventeen/daily_2026_01_09.parquet",
+        "research-data/raw/timeseventeen/daily_2026_01_10.parquet",
+        "research-data/raw/timeseventeen/daily_2026_01_15.parquet",
+        "research-data/raw/timeseventeen/daily_2026_03_03.parquet",
+        "research-data/raw/timeseventeen/daily_2026_03_21.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_26.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_27.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_28.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_29.parquet",
+        "research-data/raw/timeseventeen/daily_2026_04_30.parquet"
+      ],
+      "filters": {
+        "primary": "daily_aligned",
+        "monthly_OrderFilled": "validation-only"
+      },
+      "rows_before": 32309792,
+      "rows_after": 6866,
+      "market_count": 72
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2025-07.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2025-07.zip",
+      "downloaded_at": "2026-09-19T19:09:45.127904+00:00",
+      "checksum_sha256": "3377e023fe252418cfaf46c9e23b3f0d1e56fb2fd89b4191fc66262b947a0ee2",
+      "file_size_bytes": 2136490,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2025-10.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2025-10.zip",
+      "downloaded_at": "2026-09-19T19:09:45.131158+00:00",
+      "checksum_sha256": "985d878cacbfdde85c9e0da2e8830ab913fe01bfdcde6e488563d8194df11f6b",
+      "file_size_bytes": 2216628,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2026-01.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2026-01.zip",
+      "downloaded_at": "2026-09-19T19:09:45.134007+00:00",
+      "checksum_sha256": "d28b369da32a6ea84ba0af517b1847ab67b2fcc1e0e111c1b24d56ae07240cb9",
+      "file_size_bytes": 2127988,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "BTCUSDT-1m-2026-04.zip",
+      "local_path": "research-data/raw/binance/BTCUSDT-1m-2026-04.zip",
+      "downloaded_at": "2026-09-19T19:09:45.136627+00:00",
+      "checksum_sha256": "318afd4f5acfbcfbb40fbe727a77eee8e9e7b54d8941589c78a32283d90b4a01",
+      "file_size_bytes": 2088776,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2025-07.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2025-07.zip",
+      "downloaded_at": "2026-09-19T19:09:45.139419+00:00",
+      "checksum_sha256": "b95c721b528260d865585f0723d287c836f2f22bb681ac45e0c56eaaf0047bd9",
+      "file_size_bytes": 2130574,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2025-10.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2025-10.zip",
+      "downloaded_at": "2026-09-19T19:09:45.142263+00:00",
+      "checksum_sha256": "a384d1bea37e4f59f7cae491a6f3f2dffe262259a4a0bc9324310a9aef16a843",
+      "file_size_bytes": 2145592,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2026-01.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2026-01.zip",
+      "downloaded_at": "2026-09-19T19:09:45.145446+00:00",
+      "checksum_sha256": "cadd060ab73bd03fee94708b78738144da76d007fc2170d8ad2cec678de7a654",
+      "file_size_bytes": 2068379,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "ETHUSDT-1m-2026-04.zip",
+      "local_path": "research-data/raw/binance/ETHUSDT-1m-2026-04.zip",
+      "downloaded_at": "2026-09-19T19:09:45.148611+00:00",
+      "checksum_sha256": "8a2f0a2907764827ca3c52416bd9357c5d6213f3816fadbd0515bf504ea75ffd",
+      "file_size_bytes": 1980853,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2024_01_09.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2024_01_09.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.149116+00:00",
+      "checksum_sha256": "426e0bf6f2637a339a39d89e1d0bd9a26d7d847afd208aca5fe4b785f3260931",
+      "file_size_bytes": 82117,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2025_12_15.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2025_12_15.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.170578+00:00",
+      "checksum_sha256": "1ae4ddeee2da92ad6a44e25a4828b59de12436f69c5e022bd4a86f647ca09fcd",
+      "file_size_bytes": 18514167,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2025_12_23.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2025_12_23.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.197204+00:00",
+      "checksum_sha256": "26063632a55af93b69898fd62c67e66669f3f9f952195cfea6b8456551557d49",
+      "file_size_bytes": 21218089,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2025_12_24.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2025_12_24.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.219605+00:00",
+      "checksum_sha256": "3bdc26ee20988731c11e4797f6067c62b354d0659b2ca7efa4320ba2414df5f8",
+      "file_size_bytes": 19797199,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_01_09.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_01_09.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.270635+00:00",
+      "checksum_sha256": "f2a81414259624f7c18220e352847351d55dd1ae79a895d034780bf9dbf896e2",
+      "file_size_bytes": 52965205,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_01_10.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_01_10.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.319259+00:00",
+      "checksum_sha256": "9818ab5abcdbc2ddd8b0bdb9fdf0293adcdcbe6d78f52eb310a6ea8713cb1bda",
+      "file_size_bytes": 46547578,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_01_15.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_01_15.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.379554+00:00",
+      "checksum_sha256": "4266bb1c38e8f5c97c9e22f89324233b28bc9b077d5721bab3c021af3ee0c013",
+      "file_size_bytes": 57385600,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_03_03.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_03_03.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.530878+00:00",
+      "checksum_sha256": "e396ac9f852ddd408af2f5b87567348b5a663f8aafbf4bf4a545e0628bf9c77f",
+      "file_size_bytes": 145406743,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_03_21.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_03_21.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.647598+00:00",
+      "checksum_sha256": "87ee17897b003b1d26a036214b6d7a93631f15fc960926b3d02131cc05cbb929",
+      "file_size_bytes": 128864718,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_04_26.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_04_26.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.729150+00:00",
+      "checksum_sha256": "c337fd6e4e7b6e53729837f99dbf576563172d026b8fcb1703f10d99c44b2427",
+      "file_size_bytes": 86350677,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_04_27.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_04_27.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.817630+00:00",
+      "checksum_sha256": "9d6fb8c41aa1f283581d491a30ae27b7f9cd8bc5d32c4e86df80101038b00ebb",
+      "file_size_bytes": 90897877,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_04_28.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_04_28.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.851470+00:00",
+      "checksum_sha256": "3ebe666a9ce466c223c0a6701f794504a538e21e088b0caa607ebd931c5ee495",
+      "file_size_bytes": 27790180,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_04_29.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_04_29.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.851680+00:00",
+      "checksum_sha256": "f36668ddf22403a332f978057d527cf285b01468bc3431b04094a7bafa6aba59",
+      "file_size_bytes": 15,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    },
+    {
+      "dataset": "TimeSeventeen/Polymarket-v1",
+      "original_file": "daily_2026_04_30.parquet",
+      "local_path": "research-data/raw/timeseventeen/daily_2026_04_30.parquet",
+      "downloaded_at": "2026-09-19T19:09:45.851740+00:00",
+      "checksum_sha256": "f36668ddf22403a332f978057d527cf285b01468bc3431b04094a7bafa6aba59",
+      "file_size_bytes": 15,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "mode": "audit-repair",
+        "note": "added by audit_manifest"
+      },
+      "rows_before": null,
+      "rows_after": null,
+      "market_count": null
+    }
+  ],
+  "notes": [
+    "markets.parquet full allowed; trades/quant selective only",
+    "primary source per record required; no silent SII+TS mixing",
+    "klines 1m for regimes only; replay needs aggTrades/sub-second, not 1m",
+    "coinbase/deribit adapters prepared; no invented creds",
+    "preprocess keeps nullable + coverage; no invented aggressor side",
+    "klines 1m for regimes only; replay needs aggTrades/sub-second, not 1m",
+    "coinbase/deribit adapters prepared; no invented creds"
+  ],
+  "updated_at": "2026-09-19T19:09:45.851803+00:00",
+  "external_source_coverage": "BINANCE_ONLY",
+  "summary": {
+    "finalized_at": "2026-09-19T19:23:53.161980+00:00",
+    "raw_download_gb": 1.916,
+    "raw_budget_gb": 8.0,
+    "raw_file_count": 39,
+    "manifest_entries": 42,
+    "selected_markets": 366,
+    "buckets": [
+      {
+        "asset": "BTC",
+        "horizon": "15m",
+        "len": 60
+      },
+      {
+        "asset": "BTC",
+        "horizon": "1h",
+        "len": 6
+      },
+      {
+        "asset": "BTC",
+        "horizon": "4h",
+        "len": 60
+      },
+      {
+        "asset": "BTC",
+        "horizon": "5m",
+        "len": 60
+      },
+      {
+        "asset": "ETH",
+        "horizon": "15m",
+        "len": 60
+      },
+      {
+        "asset": "ETH",
+        "horizon": "4h",
+        "len": 60
+      },
+      {
+        "asset": "ETH",
+        "horizon": "5m",
+        "len": 60
+      }
+    ],
+    "splits": [
+      {
+        "split": "EXPLORATION",
+        "len": 183
+      },
+      {
+        "split": "OUT_OF_SAMPLE",
+        "len": 92
+      },
+      {
+        "split": "VALIDATION",
+        "len": 91
+      }
+    ],
+    "market_kinds": [
+      {
+        "market_kind": "UPDOWN",
+        "len": 360
+      },
+      {
+        "market_kind": "ABOVE",
+        "len": 6
+      }
+    ],
+    "fidelity": [
+      {
+        "fidelity": "UNKNOWN",
+        "len": 366
+      }
+    ],
+    "tape_rows": 6866,
+    "tape_conditions": 72,
+    "tape_direction_ground_truth_pct": 100.0,
+    "underlying_rows": 6843371,
+    "regime_days": 614,
+    "resolutions": 72,
+    "external_source_coverage": "BINANCE_ONLY",
+    "forbidden_downloaded": [],
+    "real_corpus_smokes": {
+      "real_pairs": {
+        "rows": 200,
+        "quoted": 26,
+        "filled": 4,
+        "markouts_5s": 4,
+        "stale": 0,
+        "incomplete": 174,
+        "buckets": {
+          "BTC-15m|15m": 46,
+          "BTC-4h|4h": 48,
+          "BTC-5m|5m": 26,
+          "ETH-15m|15m": 18,
+          "ETH-4h|4h": 48,
+          "ETH-5m|5m": 14
+        }
+      },
+      "real_BASE": {
+        "rows": 200,
+        "quoted": 26,
+        "filled": 14,
+        "markouts_5s": 14,
+        "stale": 0,
+        "incomplete": 174,
+        "buckets": {
+          "BTC-15m|15m": 46,
+          "BTC-4h|4h": 48,
+          "BTC-5m|5m": 26,
+          "ETH-15m|15m": 18,
+          "ETH-4h|4h": 48,
+          "ETH-5m|5m": 14
+        }
+      },
+      "real_OPTIMISTIC": {
+        "rows": 200,
+        "quoted": 26,
+        "filled": 14,
+        "markouts_5s": 14,
+        "stale": 0,
+        "incomplete": 174,
+        "buckets": {
+          "BTC-15m|15m": 46,
+          "BTC-4h|4h": 48,
+          "BTC-5m|5m": 26,
+          "ETH-15m|15m": 18,
+          "ETH-4h|4h": 48,
+          "ETH-5m|5m": 14
+        }
+      },
+      "real_SLOW": {
+        "rows": 200,
+        "quoted": 26,
+        "filled": 4,
+        "markouts_5s": 4,
+        "stale": 0,
+        "incomplete": 174,
+        "buckets": {
+          "BTC-15m|15m": 46,
+          "BTC-4h|4h": 48,
+          "BTC-5m|5m": 26,
+          "ETH-15m|15m": 18,
+          "ETH-4h|4h": 48,
+          "ETH-5m|5m": 14
+        }
+      }
+    },
+    "verification": "cargo fmt clean; cargo clippy --all-targets -- -D warnings clean; cargo test green (127 lib incl 22 replay + 12 replay_historical + 6 domain_market); subagent verify round 1 findings addressed; round 2 (read-only snapshot) answered below",
+    "full_bootstrap": {
+      "run_id": "full-bootstrap",
+      "requested_pairs": 10000,
+      "rows": 412,
+      "quoted": 29,
+      "filled": 6,
+      "markouts_5s": 6,
+      "buckets": {
+        "BTC-15m|15m": 90,
+        "BTC-4h|4h": 132,
+        "BTC-5m|5m": 36,
+        "ETH-15m|15m": 18,
+        "ETH-4h|4h": 122,
+        "ETH-5m|5m": 14
+      },
+      "splits": {
+        "EXPLORATION": 256,
+        "VALIDATION": 68,
+        "OUT_OF_SAMPLE": 88
+      },
+      "note": "budget capped by corpus size (72 conditions, 6866 tape rows); scale pairs by expanding daily coverage per research/README.md. stub-Jev: path evidence only, not alpha.",
+      "recorded_at": "2026-09-19T20:58:32.804612+00:00"
+    },
+    "pilot_real10": {
+      "run_id": "pilot-real10",
+      "pairs": 10,
+      "live_calls": 16,
+      "budget": 20,
+      "quotes": 0,
+      "fills": 0,
+      "latency_ms_observed": "307-1019 (BASE assumption was 320)",
+      "underreact_up_observed": "0.21-0.33 vs threshold 0.75",
+      "p_up_ge_1_tick_observed": "mostly 0.01-0.07 (one 0.48/0.38)",
+      "interpretation": "real Jev sees no underreaction in bootstrap snapshots (fallback spot, empty rules, no underlying move). Honest zero, not a bug: stub quoted 44/200 on same path. n=10 has no statistical power.",
+      "recorded_at": "2026-09-19T21:51:13.631701+00:00"
+    }
+  },
+  "debt": [
+    "fidelity 100% UNKNOWN: SII/TimeSeventeen carry no rules text; live Gamma purged short-lived 2024 updown markets (0/10 slug hit rate 2026-09-19). Infra filters EXACT/PROXY/UNKNOWN; re-run enrich_gamma.py when rules source exists.",
+    "No 1h ETH bucket in SII discovery (only BTC-1h x6); 1h-ETH backtest deferred until Gamma enrichment or venue book snapshots.",
+    "Underlying window is 3 days Jan-2024 aggTrades (6.8M ticks); replay smoke uses deterministic synthetic bootstrap across all 8 buckets x regimes. Expand window via download_underlying.py kinds/months.",
+    "Maker fills are tape-proxy models (no historical CLOB queue): OPTIMISTIC/BASE/CONSERVATIVE + sensitivity required before any profitability claim.",
+    "Jev smoke uses deterministic StubJev (0 live calls): signals/markouts path verified, alpha NOT measured. Budgeted real-Jev runs via max_jev_calls_full + JevCache.",
+    "Concurrent worker tracks (multi-asset feeds, execution variants, pipeline tags) touched engine/execution during this session; their test variants_rest_and_fill_independently + pipeline tags call-sites were red at 15:42-15:47. Untouched by this task; re-verify green after they land."
+  ]
+}

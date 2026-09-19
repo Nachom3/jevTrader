@@ -11,7 +11,7 @@ post-only antes del repricing. Capturar repricing, no resolucion.
 - [x] Codigo: `src/strategy/lead_lag.rs` (features, 8 preguntas, V1Signal, should_quote)
 - [x] QuestDB: tabla `maker_markouts` (labels a +1s/+5s/+30s)
 - [x] AGENTS.md: seccion 15 + markouts en 9.2
-- [ ] Siguiente: cliente Jev (`src/jev/`) + actor de ingesta WS
+- [x] Siguiente: cliente Jev (`src/jev/`) + actor de ingesta WS (cerrado 2026-09-19 como stale: ambos existen — `client.rs` + `ws.rs`)
 
 ## Decisions (2026-09-18)
 

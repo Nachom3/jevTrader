@@ -1,0 +1,431 @@
+//! Historical backtest binary: deterministic bootstrap smoke + Parquet corpus.
+//!
+//! Reads `research-data/processed/` when present, otherwise builds a
+//! deterministic synthetic bootstrap (seeded, multi-asset/horizon/regime).
+//! Same strategy code as live; stub Jev by default (no cost, no network).
+//! Every row carries run_id, pair_id, variant, source=HISTORICAL.
+
+use jevtrader::replay::SyntheticItem;
+use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regimes};
+use jevtrader::replay::types::{FillProfile, LatencyProfile};
+use jevtrader::replay::{
+    Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
+    Split, StubJev, build_report, write_json, write_markdown,
+};
+use std::collections::HashMap;
+use std::fs;
+use std::time::Duration;
+
+fn parse_arg(args: &[String], name: &str, default: &str) -> String {
+    let mut out = default.to_owned();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == name && i + 1 < args.len() {
+            out = args[i + 1].clone();
+        }
+        i += 1;
+    }
+    out
+}
+
+fn parse_fill(s: &str) -> FillProfile {
+    match s.to_ascii_uppercase().as_str() {
+        "OPTIMISTIC" => FillProfile::Optimistic,
+        "BASE" => FillProfile::Base,
+        _ => FillProfile::Conservative,
+    }
+}
+
+fn parse_latency(s: &str) -> LatencyProfile {
+    match s.to_ascii_uppercase().as_str() {
+        "FAST" => LatencyProfile::Fast,
+        "SLOW" => LatencyProfile::Slow,
+        _ => LatencyProfile::Base,
+    }
+}
+
+/// Deterministic multi-bucket bootstrap: BTC/ETH x 5m/15m/1h/4h x regimes.
+fn bootstrap_items(n_pairs: usize) -> Vec<SyntheticItem> {
+    let assets = ["BTC", "ETH"];
+    let horizons = ["5m", "15m", "1h", "4h"];
+    let regimes = [
+        "LOW_VOL-SIDEWAYS",
+        "NORMAL_VOL-STRONG_UP",
+        "HIGH_VOL-STRONG_DOWN",
+    ];
+    let splits = [Split::Exploration, Split::Validation, Split::OutOfSample];
+    let mut items = Vec::new();
+    let mut t = 1_700_000_000_000i64;
+    let mut i = 0usize;
+    // Simple deterministic PRNG (xorshift) for reproducibility.
+    let mut rng = 0x9E3779B97F4A7C15u64;
+    let mut next = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng
+    };
+    while items.len() < n_pairs * 4 {
+        let ai = i % 2;
+        let hi = (i / 2) % 4;
+        let ri = (i / 8) % 3;
+        let si = (i / 24) % 3;
+        let asset = assets[ai].to_owned();
+        let horizon = horizons[hi].to_owned();
+        let regime = regimes[ri].to_owned();
+        let split = splits[si];
+        let base_spot = if ai == 0 { 100_000.0 } else { 5_000.0 };
+        // Regime-driven drift + vol.
+        let drift = match ri {
+            1 => 0.0004,
+            2 => -0.0005,
+            _ => 0.0,
+        };
+        let vol = match ri {
+            0 => 0.0002,
+            1 => 0.0008,
+            _ => 0.002,
+        };
+        let r = (next() % 10_000) as f64 / 10_000.0 - 0.5;
+        let spot = base_spot * (1.0 + drift + r * vol * 2.0);
+        // Poly mid oscillates around 0.5 with regime noise.
+        let r2 = (next() % 10_000) as f64 / 10_000.0 - 0.5;
+        let mid = (0.5 + drift * 10.0 + r2 * vol * 20.0).clamp(0.05, 0.95);
+        let bid = (mid - 0.01).max(0.01);
+        let ask = (mid + 0.01).min(0.99);
+        let market_id = format!("{asset}-{horizon}");
+        let fidelity = if hi < 2 {
+            Fidelity::Exact
+        } else {
+            Fidelity::Proxy
+        };
+        items.push((
+            t, bid, ask, spot, market_id, asset, horizon, split, fidelity, regime,
+        ));
+        t += 5_000;
+        i += 1;
+    }
+    items
+}
+
+/// Replays the real processed corpus, one condition at a time.
+///
+/// Tape trades group into per-condition Poly streams; underlying ticks group
+/// per asset. Each condition replays with its own resolution horizon and
+/// regime; rows accumulate into one output sharing the runner Jev cache.
+/// Returns `None` when the corpus is absent so the caller falls back to the
+/// synthetic bootstrap. Underlying windows that do not intersect the tape
+/// window fall back to a documented constant spot (coverage gap, not a fill).
+fn run_corpus<E: JevEvaluator>(
+    runner: &mut ReplayRunner<E>,
+    corpus: &str,
+    config: &ReplayConfig,
+) -> Option<RunnerOutput> {
+    let metas = read_market_metas(corpus);
+    if metas.is_empty() {
+        return None;
+    }
+    let regimes = read_regimes(corpus);
+    let tape = ChunkEventSource::new(vec![format!("{corpus}/polymarket_trades.parquet")], 8192)
+        .read_parquet_chunks(1_000_000)
+        .unwrap_or_default();
+    if tape.is_empty() {
+        return None;
+    }
+    let underlying = ChunkEventSource::new(
+        vec![format!("{corpus}/underlying_market_data.parquet")],
+        8192,
+    )
+    .read_parquet_chunks(50_000)
+    .unwrap_or_default();
+    // Group tape per condition, underlying per asset.
+    let mut poly_by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
+    for ev in tape {
+        if let HistoricalEvent::PolyTrade { condition_id, .. } = &ev {
+            poly_by_condition
+                .entry(condition_id.clone())
+                .or_default()
+                .push(ev);
+        }
+    }
+    let mut und_by_asset: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
+    for ev in underlying {
+        if let HistoricalEvent::UnderlyingTick { asset, .. } = &ev {
+            und_by_asset.entry(asset.clone()).or_default().push(ev);
+        }
+    }
+    let meta_by_condition: HashMap<String, (String, String, String, Split, Fidelity, String)> =
+        metas
+            .iter()
+            .map(|m| {
+                let slug = if m.slug.is_empty() {
+                    m.condition_id.clone()
+                } else {
+                    m.slug.clone()
+                };
+                (
+                    m.condition_id.clone(),
+                    (
+                        slug,
+                        m.asset.clone(),
+                        m.horizon.clone(),
+                        m.split,
+                        m.fidelity,
+                        regime_at(&regimes, &m.asset, 0),
+                    ),
+                )
+            })
+            .collect();
+    // Real per-market questions for the Jev state. Empty on-chain rules are
+    // passed through as an explicit caveat, never invented.
+    let questions: HashMap<String, (String, String)> = metas
+        .iter()
+        .map(|m| {
+            let slug = if m.slug.is_empty() {
+                m.condition_id.clone()
+            } else {
+                m.slug.clone()
+            };
+            let question = if m.question.is_empty() {
+                format!("SYNTHETIC {}: question unavailable", slug)
+            } else {
+                m.question.clone()
+            };
+            let rules = if m.resolution_rules.is_empty() {
+                "no on-chain resolution rules in the SII snapshot (fidelity UNKNOWN; see manifest)"
+                    .to_owned()
+            } else {
+                m.resolution_rules.clone()
+            };
+            (slug, (question, rules))
+        })
+        .collect();
+    // Bucket-interleaved condition order (asset x horizon round-robin)
+    // so a capped budget still covers every bucket with full per-market
+    // trajectories (market isolation: one run per condition).
+    let mut buckets: HashMap<String, Vec<String>> = HashMap::new();
+    for c in poly_by_condition.keys() {
+        let key = meta_by_condition
+            .get(c)
+            .map(|m| format!("{}-{}", m.1, m.2))
+            .unwrap_or_else(|| "UNKNOWN".to_owned());
+        buckets.entry(key).or_default().push(c.clone());
+    }
+    for v in buckets.values_mut() {
+        v.sort_by_key(|c| {
+            poly_by_condition
+                .get(c)
+                .and_then(|v| v.first().map(HistoricalEvent::ts_ms))
+                .unwrap_or(i64::MAX)
+        });
+    }
+    let mut bucket_names: Vec<String> = buckets.keys().cloned().collect();
+    bucket_names.sort();
+    let mut conditions = Vec::new();
+    let mut round = 0usize;
+    loop {
+        let mut progressed = false;
+        for b in &bucket_names {
+            if let Some(c) = buckets.get(b).and_then(|v| v.get(round).cloned()) {
+                conditions.push(c);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+        round += 1;
+    }
+    let mut all_rows = Vec::new();
+    let (mut jev_hits, mut jev_misses, mut stale, mut incomplete, mut jerrs) =
+        (0, 0, 0usize, 0usize, 0usize);
+    for condition in conditions {
+        // Per-condition pair cap: spreads the budget across buckets so one
+        // long trajectory cannot consume the whole run.
+        let remaining = config.max_pairs.saturating_sub(all_rows.len() / 2);
+        if remaining == 0 {
+            break;
+        }
+        runner.config.max_pairs = remaining.clamp(1, 4);
+        let Some(poly) = poly_by_condition.get(&condition) else {
+            continue;
+        };
+        let meta = meta_by_condition.get(&condition).cloned().unwrap_or((
+            "UNKNOWN".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Unknown,
+            "UNKNOWN-UNKNOWN".to_owned(),
+        ));
+        // Regime at this condition's first trade (asset-aware, backward-only).
+        let first_ts = poly.first().map(HistoricalEvent::ts_ms).unwrap_or(0);
+        let regime = regime_at(&regimes, &meta.1, first_ts);
+        let mut single_meta = meta.clone();
+        single_meta.5 = regime;
+        let mut single_map = HashMap::new();
+        single_map.insert(condition.clone(), single_meta);
+        // Full per-market trajectory (capped): fills and markouts need
+        // real future prints, not a 4-item window.
+        let poly_stream: Vec<HistoricalEvent> = poly.iter().take(500).cloned().collect();
+        let und_stream: Vec<HistoricalEvent> = und_by_asset
+            .get(&meta.1)
+            .map(|v| v.iter().take(2_000).cloned().collect())
+            .unwrap_or_default();
+        let out = runner.run_events_by_condition(
+            vec![poly_stream, und_stream],
+            &[single_map[&condition].clone()],
+            &single_map,
+            &questions,
+        );
+        jev_hits = out.jev_hits;
+        jev_misses = out.jev_misses;
+        stale += out.stale_skips;
+        incomplete += out.incomplete_pairs;
+        jerrs += out.jev_errors;
+        all_rows.extend(out.rows);
+    }
+    Some(jevtrader::replay::RunnerOutput {
+        rows: all_rows,
+        jev_hits,
+        jev_misses,
+        stale_skips: stale,
+        incomplete_pairs: incomplete,
+        jev_errors: jerrs,
+    })
+}
+
+/// Asset-aware backward-only regime lookup: newest regime day at or before
+/// `ts_ms` for `asset` (`BTC` matches `BTCUSDT`). Falls back to UNKNOWN.
+fn regime_at(regimes: &[(i64, String, String)], asset: &str, ts_ms: i64) -> String {
+    let day = ts_ms / 1000 / 86400 * 86400;
+    let mut best: Option<&String> = None;
+    for (d, symbol, regime) in regimes {
+        if *d <= day && symbol.starts_with(asset) {
+            best = Some(regime);
+        } else if *d > day {
+            break;
+        }
+    }
+    best.cloned()
+        .unwrap_or_else(|| "UNKNOWN-UNKNOWN".to_owned())
+}
+
+/// Runs corpus replay (or synthetic fallback) with any evaluator.
+fn execute<E: JevEvaluator>(
+    runner: &mut ReplayRunner<E>,
+    corpus: &str,
+    config: &ReplayConfig,
+) -> RunnerOutput {
+    match run_corpus(runner, corpus, config) {
+        Some(output) => {
+            println!("corpus=HISTORICAL dir={corpus}");
+            output
+        }
+        None => {
+            println!("corpus=SYNTHETIC-BOOTSTRAP (processed corpus absent)");
+            let items = bootstrap_items(config.max_pairs);
+            let resolution_at_ms = items.last().map_or(0, |i| i.0) + 4 * 3_600_000;
+            runner.run_synthetic(&items, resolution_at_ms)
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let max_pairs: usize = parse_arg(&args, "--max-pairs", "100")
+        .parse()
+        .unwrap_or(100);
+    let fill = parse_fill(&parse_arg(&args, "--fill-model", "CONSERVATIVE"));
+    let latency = parse_latency(&parse_arg(&args, "--latency", "BASE"));
+    let out = parse_arg(&args, "--out", "research-data/reports/smoke_pairs.json");
+    let run_id = parse_arg(&args, "--run-id", "smoke-bootstrap");
+
+    let mut config = ReplayConfig::smoke(&run_id);
+    config.max_pairs = max_pairs.min(10_000);
+    config.fill = fill;
+    config.latency = latency;
+
+    let corpus = parse_arg(&args, "--corpus", "research-data/processed");
+    let real_jev = parse_arg(&args, "--real-jev", "0") == "1";
+    let max_jev_calls: u64 = parse_arg(&args, "--max-jev-calls", "20")
+        .parse()
+        .unwrap_or(20);
+    // Hard spend guard: live calls never exceed this in one run.
+    let max_jev_calls = max_jev_calls.clamp(1, 10_000);
+    let output = if real_jev {
+        let api_key = std::env::var("TYPESAFE_API_KEY").unwrap_or_default();
+        let deadline_ms: u64 = std::env::var("JEV_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1500);
+        let evaluator =
+            RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
+                .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
+        let mut runner = ReplayRunner::new(config.clone(), evaluator);
+        let output = execute(&mut runner, &corpus, &config);
+        println!(
+            "jev_live_calls={} budget={}",
+            runner.evaluator.calls, max_jev_calls
+        );
+        output
+    } else {
+        let mut runner = ReplayRunner::new(config.clone(), StubJev::new(42));
+        execute(&mut runner, &corpus, &config)
+    };
+
+    let json = write_json(&output.rows).expect("json renders");
+    if let Some(parent) = std::path::Path::new(&out).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(&out, &json).expect("pairs json writes");
+    let summary = build_report(&output.rows);
+    let md = write_markdown(&summary);
+    let md_path = format!("{}.md", out.trim_end_matches(".json"));
+    let _ = fs::write(&md_path, &md);
+
+    // Console summary segmented by variant/asset/horizon (never global only).
+    let mut n_c = 0;
+    let mut n_q = 0;
+    let mut mo_c = Vec::new();
+    let mut mo_q = Vec::new();
+    for r in &output.rows {
+        if r.variant == "CONTROL" {
+            n_c += 1;
+            if let Some(m) = r.markout_5s_pp {
+                mo_c.push(m);
+            }
+        } else {
+            n_q += 1;
+            if let Some(m) = r.markout_5s_pp {
+                mo_q.push(m);
+            }
+        }
+    }
+    let mean = |v: &[f64]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
+    println!(
+        "run={} rows={} CONTROL n={} mean_mo5s={:.4} | QUANT_V1 n={} mean_mo5s={:.4} | stale={} incomplete={} jev_hits={} jev_misses={} -> {}",
+        run_id,
+        output.rows.len(),
+        n_c,
+        mean(&mo_c),
+        n_q,
+        mean(&mo_q),
+        output.stale_skips,
+        output.incomplete_pairs,
+        output.jev_hits,
+        output.jev_misses,
+        out
+    );
+    if real_jev {
+        println!("NOTE: LIVE Jev judgments (budget-capped); tiny-n pilot, not alpha evidence. OOS untouched for tuning.");
+    } else {
+        println!("NOTE: stub-Jev smoke only; not alpha evidence. OOS untouched for tuning.");
+    }
+}

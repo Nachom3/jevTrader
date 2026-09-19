@@ -29,6 +29,9 @@ ringbuf = "0.5.2"
 hdrhistogram = "7.6.0"
 ndarray = "0.17.2"
 RustQuant_math = "0.4"
+# Historical replay: Parquet chunk streaming (never full-RAM) + report output.
+arrow = "60"
+parquet = "60"
 
 [dev-dependencies]
 criterion = "0.8.2"

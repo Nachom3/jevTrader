@@ -339,7 +339,24 @@ impl PaperBook {
 }
 
 /// Returns a buy-side markout in percentage points.
+///
+/// Kept as the V1 buy-side alias; use [`signed_markout`] when the side is
+/// carried explicitly.
 #[must_use]
 pub fn markout(fill_price: PriceTicks, mid_at_horizon: PriceTicks) -> f64 {
-    (mid_at_horizon.to_f64() - fill_price.to_f64()) * 100.0
+    signed_markout(TradeSide::Buy, fill_price, mid_at_horizon)
+}
+
+/// Returns a side-signed markout in percentage points.
+///
+/// BUY YES: `future_price - fill_price`. SELL (or an equivalent short YES
+/// exposure): `fill_price - future_price`, so the sign always matches the
+/// economic PnL direction of the position.
+#[must_use]
+pub fn signed_markout(side: TradeSide, fill_price: PriceTicks, mid_at_horizon: PriceTicks) -> f64 {
+    let move_pp = (mid_at_horizon.to_f64() - fill_price.to_f64()) * 100.0;
+    match side {
+        TradeSide::Buy => move_pp,
+        TradeSide::Sell => -move_pp,
+    }
 }

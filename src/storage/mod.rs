@@ -3,5 +3,6 @@
 mod questdb;
 
 pub use questdb::{
-    QuestDbHandle, QuestDbWriter, StorageEvent, StorageSendResult, Variant, WriterMetrics,
+    ExperimentTags, QuestDbHandle, QuestDbWriter, StorageEvent, StorageSendResult, Variant,
+    WriterMetrics,
 };

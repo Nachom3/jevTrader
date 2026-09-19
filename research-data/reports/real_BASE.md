@@ -1,0 +1,20 @@
+# Historical replay report
+
+| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_mo5s | pnl | stale | incomplete |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| CONTROL | BTC | 15m | LOW_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 23 | 2 | 1 | -0.0000 | -0.0000 | 0 | 21 |
+| CONTROL | BTC | 4h | NORMAL_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 24 | 5 | 3 | -1.0000 | -3.0000 | 0 | 19 |
+| CONTROL | BTC | 5m | LOW_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 13 | 0 | 0 | 0.0000 | 0.0000 | 0 | 13 |
+| CONTROL | ETH | 15m | LOW_VOL-SIDEWAYS | VALIDATION | UNKNOWN | BASE | BASE | 9 | 2 | 0 | 0.0000 | 0.0000 | 0 | 7 |
+| CONTROL | ETH | 4h | LOW_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 4 | 1 | 1 | 0.0000 | 0.0000 | 0 | 3 |
+| CONTROL | ETH | 4h | NORMAL_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 16 | 3 | 1 | -1.0000 | -0.6000 | 0 | 13 |
+| CONTROL | ETH | 4h | NORMAL_VOL-SIDEWAYS | VALIDATION | UNKNOWN | BASE | BASE | 4 | 2 | 2 | 0.0000 | -0.2000 | 0 | 2 |
+| CONTROL | ETH | 5m | LOW_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 7 | 1 | 1 | 1.0000 | 0.5000 | 0 | 6 |
+| QUANT_V1 | BTC | 15m | LOW_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 23 | 1 | 1 | 0.0000 | 0.0000 | 0 | 22 |
+| QUANT_V1 | BTC | 4h | NORMAL_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 24 | 3 | 1 | -1.0000 | -1.0000 | 0 | 21 |
+| QUANT_V1 | BTC | 5m | LOW_VOL-SIDEWAYS | EXPLORATION | UNKNOWN | BASE | BASE | 13 | 2 | 0 | 0.0000 | 0.0000 | 0 | 11 |
+| QUANT_V1 | ETH | 15m | LOW_VOL-SIDEWAYS | VALIDATION | UNKNOWN | BASE | BASE | 9 | 0 | 0 | 0.0000 | 0.0000 | 0 | 9 |
+| QUANT_V1 | ETH | 4h | LOW_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 4 | 1 | 1 | 0.0000 | 0.0000 | 0 | 3 |
+| QUANT_V1 | ETH | 4h | NORMAL_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 16 | 1 | 0 | 0.0000 | 0.0000 | 0 | 15 |
+| QUANT_V1 | ETH | 4h | NORMAL_VOL-SIDEWAYS | VALIDATION | UNKNOWN | BASE | BASE | 4 | 1 | 1 | 1.0000 | 0.8000 | 0 | 3 |
+| QUANT_V1 | ETH | 5m | LOW_VOL-SIDEWAYS | OUT_OF_SAMPLE | UNKNOWN | BASE | BASE | 7 | 1 | 1 | 1.0000 | 0.5000 | 0 | 6 |

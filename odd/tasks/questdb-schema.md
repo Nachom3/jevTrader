@@ -8,7 +8,7 @@ artefactos versionables: DDL QuestDB + structs Rust definitivos.
 - [x] Revisar arquitectura vs docs vivas (TypeSafe + Polymarket + QuestDB CREATE TABLE)
 - [x] DDL QuestDB: `questdb/schema.sql` (9 tablas, PARTITION BY DAY / MONTH)
 - [x] Structs Rust: `src/state/market_state.rs` (MarketState + JevSignal + PaperDecision)
-- [ ] Siguiente feature: `Cargo.toml` + crate scaffold segun layout AGENTS.md seccion 8
+- [x] Siguiente feature: `Cargo.toml` + crate scaffold segun layout AGENTS.md seccion 8 (cerrado 2026-09-19 como stale: scaffold existe desde foundation)
 
 ## Decisions (2026-09-18)
 

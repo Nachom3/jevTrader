@@ -3,18 +3,19 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use jevtrader::config::AppConfig;
-use jevtrader::domain::{ConditionId, PriceTicks, TokenId, Trigger};
+use jevtrader::domain::{Asset, ConditionId, MarketKey, PriceTicks, TickSize, TokenId, Trigger};
 use jevtrader::engine::{
-    BookSnapshot, ExecutionActor, MarketActor, MarketMessage, Pipeline, PipelineInput, SignalActor,
+    BookSnapshot, ExecutionActor, MarketActor, MarketMessage, MarketRegistry, Pipeline,
+    PipelineInput, SignalActor,
 };
-use jevtrader::feeds::{BinanceFeed, CoinbaseFeed, DeribitFeed, Venue, VenueTick};
+use jevtrader::feeds::{BinanceFeed, CoinbaseFeed, DeribitFeed, SharedFeeds, VenueTick};
 use jevtrader::market_spec::MarketSpec;
 use jevtrader::polymarket::{
-    BASE_UNITS_PER_TOKEN, OrderBook, TopOfBookSnapshot, fetch_market_by_slug, fetch_top_of_book,
+    BASE_UNITS_PER_TOKEN, MarketMetadata, OrderBook, TopOfBookSnapshot, fetch_market_by_slug,
+    fetch_top_of_book,
 };
-use jevtrader::state::feature_builder::{
-    ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
-};
+use jevtrader::state::feature_builder::{ContractContext, ResolutionContext};
+use jevtrader::storage::{QuestDbHandle, QuestDbWriter};
 use jevtrader::strategy::risk::RiskLimits;
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
 use polymarket_client_sdk_v2::gamma::Client as GammaClient;
@@ -35,16 +36,20 @@ async fn start() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    match env::var("JEVTRADER_MARKET_FILE") {
-        Ok(path) if !path.trim().is_empty() => {
-            let config = AppConfig::load().map_err(anyhow::Error::new)?;
-            let deadline = jev_deadline()?;
-            let market = MarketSpec::load(&path)
+    let paths = configured_market_paths()?;
+    if paths.is_empty() {
+        startup_check().await
+    } else {
+        let config = AppConfig::load().map_err(anyhow::Error::new)?;
+        let deadline = jev_deadline()?;
+        let mut specs = Vec::with_capacity(paths.len());
+        for path in paths {
+            let spec = MarketSpec::load(&path)
                 .map_err(anyhow::Error::new)
                 .with_context(|| format!("loading market spec `{path}`"))?;
-            run_shadow_paper(config, market, deadline).await
+            specs.push(spec);
         }
-        _ => startup_check().await,
+        run_multi_market(config, specs, deadline).await
     }
 }
 
@@ -56,267 +61,303 @@ async fn startup_check() -> Result<()> {
         config.quote_thresholds
     );
     eprintln!(
-        "INFO Tokio runtime startup check complete; set JEVTRADER_MARKET_FILE to run shadow/paper"
+        "INFO Tokio runtime startup check complete; set JEVTRADER_MARKET_FILE or JEVTRADER_MARKET_FILES to run shadow/paper"
     );
     Ok(())
 }
 
-/// Wires the existing public feed and Polymarket adapters into one paper-only
-/// market loop. No private key is passed to an order client and no live order
-/// path exists here.
-async fn run_shadow_paper(config: AppConfig, market: MarketSpec, deadline: Duration) -> Result<()> {
-    let size = parse_shadow_env::<u64>("JEVTRADER_MARKET_SIZE")?;
+/// Reads the plural market configuration first, retaining the singular
+/// variable as a compatibility fallback for the original single-market mode.
+fn configured_market_paths() -> Result<Vec<String>> {
+    let mut paths = env::var("JEVTRADER_MARKET_FILES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
+    if paths.is_empty()
+        && let Ok(path) = env::var("JEVTRADER_MARKET_FILE")
+        && !path.trim().is_empty()
+    {
+        paths.push(path);
+    }
+
+    if paths.len() > 8 {
+        return Err(anyhow!(
+            "JEVTRADER_MARKET_FILES supports at most 8 market specs; got {}",
+            paths.len()
+        ));
+    }
+    Ok(paths)
+}
+
+/// Wires the public feeds and Polymarket adapters into one paper-only loop for
+/// every configured contract. There is one stateful [`Pipeline`] per market.
+async fn run_multi_market(
+    config: AppConfig,
+    specs: Vec<MarketSpec>,
+    deadline: Duration,
+) -> Result<()> {
     let gamma = GammaClient::default();
-    let metadata = fetch_market_by_slug(&gamma, &market.slug)
-        .await
-        .context("fetching Polymarket market metadata")?;
     let clob = ClobClient::new("https://clob.polymarket.com", ClobConfig::default())
         .context("creating the public Polymarket CLOB client")?;
-    let top = fetch_top_of_book(&clob, &metadata.yes_token_id)
-        .await
-        .context("fetching the initial Polymarket book")?;
+    let (questdb, _questdb_task) = QuestDbWriter::spawn(&config.questdb_ilp_addr, 4096);
+    let run_id = env::var("JEVTRADER_RUN_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("run-{}", unix_time_ms()));
+    let size = parse_shadow_env::<u64>("JEVTRADER_MARKET_SIZE")?;
 
-    let (_market_sender, market_receiver) = mpsc::channel(1);
-    let mut market_actor = MarketActor::new(metadata.yes_token_id.clone(), market_receiver);
-    let mut initial_book = OrderBook::default();
-    if let Some(best_bid) = top.best_bid {
-        initial_book.apply_delta(
-            jevtrader::polymarket::BookSide::Bid,
-            best_bid,
-            BASE_UNITS_PER_TOKEN,
+    let mut registry = MarketRegistry::new();
+    let mut markets = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let metadata = fetch_market_by_slug(&gamma, &spec.slug)
+            .await
+            .with_context(|| format!("fetching Polymarket market metadata for `{}`", spec.slug))?;
+        let key = spec
+            .market_key()
+            .ok_or_else(|| anyhow!("market spec `{}` has no supported market key", spec.slug))?;
+        registry
+            .register(
+                spec.clone(),
+                metadata.condition_id.0.clone(),
+                metadata.yes_token_id.0.clone(),
+            )
+            .map_err(anyhow::Error::new)?;
+
+        let registered = registry
+            .get(&key)
+            .expect("a market is present immediately after registration");
+        let runtime_spec = registered.spec.clone();
+        let condition_id = ConditionId(registered.condition_id.clone());
+        let yes_token_id = TokenId(registered.yes_token_id.clone());
+        let market_id = runtime_spec
+            .market_key()
+            .map(MarketKey::market_id)
+            .unwrap_or_else(|| metadata.market_id.0.clone());
+        markets.push(
+            build_market_runtime(
+                &run_id,
+                &config,
+                deadline,
+                questdb.clone(),
+                runtime_spec,
+                market_id,
+                metadata,
+                condition_id,
+                yes_token_id,
+                &clob,
+            )
+            .await?,
         );
     }
-    if let Some(best_ask) = top.best_ask {
-        initial_book.apply_delta(
-            jevtrader::polymarket::BookSide::Ask,
-            best_ask,
-            BASE_UNITS_PER_TOKEN,
-        );
-    }
-    let initial_snapshot = BookSnapshot {
-        condition_id: metadata.condition_id.clone(),
-        token_id: metadata.yes_token_id.clone(),
-        sequence: None,
-        bids: initial_book.bids().to_vec(),
-        asks: initial_book.asks().to_vec(),
-        book_hash: Some(initial_book.book_hash()),
-        source_hash: None,
-    };
-    market_actor.apply_message(MarketMessage::BookSnapshot(initial_snapshot));
-
-    // The existing MarketActor owns the stream receiver and intentionally does
-    // not expose it. This bounded shadow path therefore refreshes the same
-    // actor-owned book through the existing public REST adapter; the WS adapter
-    // remains a follow-up integration surface outside this task's allowed files.
 
     let (feed_sender, mut feed_receiver) = mpsc::channel::<VenueTick>(8192);
-    let binance_sender = feed_sender.clone();
-    tokio::spawn(async move {
-        let _ = BinanceFeed::new().run(binance_sender).await;
-    });
-    let coinbase_sender = feed_sender.clone();
-    tokio::spawn(async move {
-        let _ = CoinbaseFeed::new().run(coinbase_sender).await;
-    });
-    let deribit_sender = feed_sender.clone();
-    tokio::spawn(async move {
-        let _ = DeribitFeed::new().run(deribit_sender).await;
-    });
+    spawn_feeds(feed_sender.clone());
     drop(feed_sender);
+    let mut shared_feeds = SharedFeeds::new();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
 
-    let (questdb, _questdb_task) =
-        jevtrader::storage::QuestDbWriter::spawn(&config.questdb_ilp_addr, 4096);
-    let signal_actor = SignalActor::from_freshness_policy(config.freshness_policy);
-    let execution_actor = ExecutionActor::new(RiskLimits::from_freshness_policy(
-        1,
-        config.freshness_policy,
-        false,
-    ));
-    let mut pipeline = Pipeline::new(
-        signal_actor,
-        execution_actor,
+    // This is intentionally a sequential modular monolith. Real parallelism
+    // per market runtime is a follow-up once its scheduling and rate limits
+    // are specified; one shared loop keeps V1 ordering deterministic today.
+    loop {
+        interval.tick().await;
+        while let Ok(tick) = feed_receiver.try_recv() {
+            shared_feeds.apply(tick);
+        }
+
+        let observed_at_ms = unix_time_ms();
+        for market in &mut markets {
+            let remaining_secs = market.spec.time_remaining_secs(observed_at_ms);
+            let tradable = {
+                let registered = registry
+                    .get_mut(&market.key)
+                    .expect("runtime and registry must have the same market keys");
+                registered.lifecycle = registered.lifecycle.advance(remaining_secs);
+                registered.is_tradable()
+            };
+            if !tradable {
+                continue;
+            }
+
+            let fresh = refresh_market_book(market, &clob).await;
+            let mut snapshot = market.actor.latest_snapshot();
+            if !fresh {
+                // Staleness belongs to this runtime only; no other market's
+                // decision is blocked by a REST failure here.
+                snapshot.stale = true;
+                snapshot.book.mark_stale();
+            }
+
+            let (asset, horizon) = match (market.spec.asset(), market.spec.horizon()) {
+                (Some(asset), Some(horizon)) => (asset, horizon),
+                _ => continue,
+            };
+            let lane = shared_feeds.lane(asset);
+            let resolution = ResolutionContext::new(
+                market.spec.target,
+                remaining_secs,
+                market.spec.resolution_source.clone(),
+            );
+            let contract =
+                ContractContext::from_parts(asset.as_str(), horizon.as_str(), horizon.seconds());
+            tracing::trace!(
+                market = %market.market_id,
+                asset = %contract.asset_symbol,
+                horizon = %contract.horizon_label,
+                "building contract context"
+            );
+            let mid = coherent_mid(snapshot.book.best_bid(), snapshot.book.best_ask());
+            market
+                .pipeline
+                .run_step(PipelineInput {
+                    market_id: &market.market_id,
+                    condition_id: &market.condition_id.0,
+                    market_spec: &market.spec,
+                    resolution,
+                    snapshot,
+                    last_trade_price: market.last_trade_price,
+                    tick_size: market.tick_size,
+                    recent_ticks: lane.recent_ticks(),
+                    venues: lane.venues(),
+                    order_flow: lane.order_flow(observed_at_ms),
+                    size,
+                    observed_at_ms,
+                    mid,
+                    trigger: Trigger::PriceMove,
+                })
+                .await;
+        }
+    }
+}
+
+/// The six public feed connections share one bounded normalized tick channel.
+fn spawn_feeds(sender: mpsc::Sender<VenueTick>) {
+    for asset in Asset::ALL {
+        let feed_sender = sender.clone();
+        tokio::spawn(async move {
+            if let Err(error) = BinanceFeed::for_asset(asset).run(feed_sender).await {
+                tracing::warn!(?asset, %error, "Binance feed stopped");
+            }
+        });
+
+        let feed_sender = sender.clone();
+        tokio::spawn(async move {
+            if let Err(error) = CoinbaseFeed::for_asset(asset).run(feed_sender).await {
+                tracing::warn!(?asset, %error, "Coinbase feed stopped");
+            }
+        });
+
+        let feed_sender = sender.clone();
+        tokio::spawn(async move {
+            if let Err(error) = DeribitFeed::for_asset(asset).run(feed_sender).await {
+                tracing::warn!(?asset, %error, "Deribit feed stopped");
+            }
+        });
+    }
+}
+
+struct MarketRuntimeState {
+    key: MarketKey,
+    spec: MarketSpec,
+    market_id: String,
+    condition_id: ConditionId,
+    yes_token_id: TokenId,
+    actor: MarketActor,
+    pipeline: Pipeline,
+    last_trade_price: PriceTicks,
+    tick_size: TickSize,
+}
+
+// The runtime constructor keeps the venue metadata and pipeline wiring
+// explicit; grouping these stable dependencies would hide market isolation.
+#[allow(clippy::too_many_arguments)]
+async fn build_market_runtime(
+    run_id: &str,
+    config: &AppConfig,
+    deadline: Duration,
+    questdb: QuestDbHandle,
+    spec: MarketSpec,
+    market_id: String,
+    metadata: MarketMetadata,
+    condition_id: ConditionId,
+    yes_token_id: TokenId,
+    clob: &ClobClient,
+) -> Result<MarketRuntimeState> {
+    let top = fetch_top_of_book(clob, &yes_token_id)
+        .await
+        .with_context(|| format!("fetching initial Polymarket book for `{market_id}`"))?;
+    let (_market_sender, market_receiver) = mpsc::channel(1);
+    let mut actor = MarketActor::new(yes_token_id.clone(), market_receiver);
+    actor.apply_message(MarketMessage::BookSnapshot(book_snapshot_from_top(
+        &condition_id,
+        &yes_token_id,
+        &top,
+    )));
+
+    let key = spec
+        .market_key()
+        .ok_or_else(|| anyhow!("market spec `{}` has no supported market key", spec.slug))?;
+    let pipeline = Pipeline::new(
+        run_id.to_owned(),
+        SignalActor::from_freshness_policy(config.freshness_policy),
+        ExecutionActor::new(RiskLimits::from_freshness_policy(
+            1,
+            config.freshness_policy,
+            false,
+        )),
         questdb,
-        config.typesafe_api_key,
+        config.typesafe_api_key.clone(),
         deadline,
         config.quote_thresholds,
         config.quant,
         512,
     );
 
-    let initial_mid = coherent_mid(top.best_bid, top.best_ask);
-    let mut last_trade_price = initial_mid.unwrap_or_else(|| PriceTicks::from_f64(0.0));
-    let mut tick_size = top.tick_size;
-    let mut external = ExternalState::new();
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    loop {
-        interval.tick().await;
-        while let Ok(tick) = feed_receiver.try_recv() {
-            external.apply(tick);
-        }
-
-        let observed_at_ms = unix_time_ms();
-        let mut book_is_stale = false;
-        match fetch_top_of_book(&clob, &metadata.yes_token_id).await {
-            Ok(top) => {
-                tick_size = top.tick_size;
-                let snapshot =
-                    book_snapshot_from_top(&metadata.condition_id, &metadata.yes_token_id, &top);
-                market_actor.apply_message(MarketMessage::BookSnapshot(snapshot));
-                if let Some(mid) = coherent_mid(top.best_bid, top.best_ask) {
-                    last_trade_price = mid;
-                }
-            }
-            Err(_error) => {
-                book_is_stale = true;
-            }
-        }
-        let mut snapshot = market_actor.latest_snapshot();
-        if book_is_stale {
-            snapshot.stale = true;
-            snapshot.book.mark_stale();
-        }
-        let resolution = ResolutionContext::new(
-            market.target,
-            market
-                .resolution_at_ms
-                .saturating_sub(observed_at_ms)
-                .max(0) as u64
-                / 1_000,
-            market.resolution_source.clone(),
-        );
-        let order_flow = external.order_flow(observed_at_ms);
-        let result = pipeline
-            .run_step(PipelineInput {
-                market_id: &metadata.market_id.0,
-                condition_id: &metadata.condition_id.0,
-                market_spec: &market,
-                resolution,
-                snapshot: snapshot.clone(),
-                last_trade_price,
-                tick_size,
-                recent_ticks: &external.recent_ticks,
-                venues: external.venues,
-                order_flow,
-                size,
-                observed_at_ms,
-                mid: coherent_mid(snapshot.book.best_bid(), snapshot.book.best_ask()),
-                trigger: Trigger::PriceMove,
-            })
-            .await;
-        let _ = result;
-    }
+    Ok(MarketRuntimeState {
+        key,
+        spec,
+        market_id: if market_id.is_empty() {
+            metadata.market_id.0
+        } else {
+            market_id
+        },
+        condition_id,
+        yes_token_id,
+        actor,
+        pipeline,
+        last_trade_price: coherent_mid(top.best_bid, top.best_ask)
+            .unwrap_or_else(|| PriceTicks::from_f64(0.0)),
+        tick_size: top.tick_size,
+    })
 }
 
-/// The current feed adapters expose normalized ticks rather than an aggregate
-/// actor. This small accumulator is the minimum bridge needed by the feature
-/// builder; it does not change or reimplement any venue adapter.
-struct ExternalState {
-    recent_ticks: Vec<ExternalTick>,
-    flow: Vec<(i64, f64, bool)>,
-    venues: VenueMicroprices,
-}
-
-impl ExternalState {
-    fn new() -> Self {
-        Self {
-            recent_ticks: Vec::new(),
-            flow: Vec::new(),
-            venues: VenueMicroprices {
-                binance: f64::NAN,
-                coinbase: f64::NAN,
-                perp: f64::NAN,
-                perp_basis_pct: f64::NAN,
-            },
-        }
-    }
-
-    fn apply(&mut self, tick: VenueTick) {
-        let timestamp = if tick.ts_exchange_ms > 0 {
-            tick.ts_exchange_ms
-        } else {
-            tick.ts_local_ms
-        };
-        let timestamp = timestamp.max(0);
-        let price = tick.price_f64;
-        if matches!(tick.venue, Venue::Binance | Venue::Coinbase)
-            && price.is_finite()
-            && price > 0.0
-        {
-            self.recent_ticks.push(ExternalTick {
-                price,
-                ts_ms: timestamp as u64,
-            });
-            self.recent_ticks.sort_unstable_by_key(|tick| tick.ts_ms);
-            let oldest = timestamp.saturating_sub(300_000) as u64;
-            self.recent_ticks.retain(|tick| tick.ts_ms >= oldest);
-        }
-
-        if tick.trade_size_f64.is_finite() && tick.trade_size_f64 > 0.0 {
-            self.flow
-                .push((timestamp, tick.trade_size_f64, tick.trade_side_buy));
-            let oldest = timestamp.saturating_sub(5_000);
-            self.flow.retain(|(at_ms, _, _)| *at_ms >= oldest);
-        }
-
-        let microprice = if tick.best_bid_f64.is_finite()
-            && tick.best_ask_f64.is_finite()
-            && tick.best_bid_f64 > 0.0
-            && tick.best_ask_f64 > 0.0
-        {
-            Some((tick.best_bid_f64 + tick.best_ask_f64) / 2.0)
-        } else if price.is_finite() && price > 0.0 {
-            Some(price)
-        } else {
-            None
-        };
-        if let Some(microprice) = microprice {
-            match tick.venue {
-                Venue::Binance => self.venues.binance = microprice,
-                Venue::Coinbase => self.venues.coinbase = microprice,
-                Venue::Deribit => self.venues.perp = microprice,
+async fn refresh_market_book(runtime: &mut MarketRuntimeState, clob: &ClobClient) -> bool {
+    match fetch_top_of_book(clob, &runtime.yes_token_id).await {
+        Ok(top) => {
+            runtime.tick_size = top.tick_size;
+            runtime
+                .actor
+                .apply_message(MarketMessage::BookSnapshot(book_snapshot_from_top(
+                    &runtime.condition_id,
+                    &runtime.yes_token_id,
+                    &top,
+                )));
+            if let Some(mid) = coherent_mid(top.best_bid, top.best_ask) {
+                runtime.last_trade_price = mid;
             }
+            true
         }
-    }
-
-    fn order_flow(&self, at_ms: i64) -> OrderFlowAggregates {
-        let mut buy_1s = 0.0;
-        let mut sell_1s = 0.0;
-        let mut buy_5s = 0.0;
-        let mut sell_5s = 0.0;
-        for (timestamp, size, buy) in &self.flow {
-            let age = at_ms.saturating_sub(*timestamp);
-            if (0..=1_000).contains(&age) {
-                if *buy {
-                    buy_1s += *size;
-                } else {
-                    sell_1s += *size;
-                }
-            }
-            if (0..=5_000).contains(&age) {
-                if *buy {
-                    buy_5s += *size;
-                } else {
-                    sell_5s += *size;
-                }
-            }
-        }
-        let total_1s = buy_1s + sell_1s;
-        OrderFlowAggregates {
-            buy_vol_1s: buy_1s,
-            sell_vol_1s: sell_1s,
-            ofi_1s: buy_1s - sell_1s,
-            ofi_5s: buy_5s - sell_5s,
-            imbalance: if total_1s > 0.0 {
-                (buy_1s - sell_1s) / total_1s
-            } else {
-                0.0
-            },
-            aggressive_buy_ratio: if total_1s > 0.0 {
-                buy_1s / total_1s
-            } else {
-                0.0
-            },
+        Err(error) => {
+            tracing::warn!(market = %runtime.market_id, %error, "Polymarket top-of-book refresh failed");
+            false
         }
     }
 }
