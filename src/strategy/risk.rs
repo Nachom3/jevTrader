@@ -1,11 +1,39 @@
 //! Runtime risk gates shared by quote decisions and future execution paths.
 
+use jevtrader::config::FreshnessPolicy;
+
 /// Hard limits checked before a strategy intent can leave the hot path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RiskLimits {
     pub max_outstanding_quotes: usize,
     pub max_latency_ms: u64,
     pub killed: bool,
+}
+
+impl RiskLimits {
+    /// Creates risk limits with latency derived from the shared policy.
+    #[must_use]
+    pub const fn from_freshness_policy(
+        max_outstanding_quotes: usize,
+        freshness_policy: FreshnessPolicy,
+        killed: bool,
+    ) -> Self {
+        Self {
+            max_outstanding_quotes,
+            max_latency_ms: freshness_policy.max_latency_ms,
+            killed,
+        }
+    }
+
+    /// Creates risk limits with latency derived from the shared policy.
+    #[must_use]
+    pub const fn new(
+        max_outstanding_quotes: usize,
+        freshness_policy: FreshnessPolicy,
+        killed: bool,
+    ) -> Self {
+        Self::from_freshness_policy(max_outstanding_quotes, freshness_policy, killed)
+    }
 }
 
 /// The typed reason a quote was blocked by the risk gate.
@@ -15,6 +43,8 @@ pub enum RiskBlock {
     StaleBook,
     TooManyOutstandingQuotes,
     LatencyExceeded,
+    /// The strategy intent failed paper-order validation and was rejected.
+    InvalidOrder,
 }
 
 /// Mutable runtime gate for the V1 kill switch and bounded quote risk.
@@ -28,6 +58,20 @@ impl RiskGate {
     #[must_use]
     pub const fn new(limits: RiskLimits) -> Self {
         Self { limits }
+    }
+
+    /// Creates a gate whose latency limit comes from the shared policy.
+    #[must_use]
+    pub const fn from_freshness_policy(
+        max_outstanding_quotes: usize,
+        freshness_policy: FreshnessPolicy,
+        killed: bool,
+    ) -> Self {
+        Self::new(RiskLimits::from_freshness_policy(
+            max_outstanding_quotes,
+            freshness_policy,
+            killed,
+        ))
     }
 
     /// Returns the limits currently enforced by this gate.

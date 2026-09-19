@@ -5,9 +5,10 @@
 -- Conventions:
 --   * Every event table has a designated TIMESTAMP(ts) PARTITION BY DAY (WAL default).
 --   * IDs meant for WHERE filtering are SYMBOL NOCACHE (high cardinality: markets, tokens).
---   * Low-cardinality enums (outcome, decision, trigger) are cached SYMBOLs.
+--   * Low-cardinality enums (outcome, decision, trigger, variant) are cached SYMBOLs.
 --   * Full JSON payloads (state, questions, book depth) go in STRING columns.
---   * Relational / static metadata (Gamma snapshot, strategies, users) lives in Postgres, NOT here.
+--   * Relational / static metadata (Gamma snapshot, strategies, users) lives outside
+--     QuestDB. V1 has no Postgres: there is no relational store in scope.
 --   * `resolutions` is the label table for backtesting jev_signals.
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -84,24 +85,45 @@ CREATE TABLE IF NOT EXISTS news_items (
 -- text_en: always English (Jev is English-first). Translate/summarize in the builder.
 -- condition_id NULLABLE in practice: NULL means "unclassified / market-agnostic".
 
+-- V1 shape note: these three tables replace the pre-V1 storage contract.
+-- `CREATE TABLE IF NOT EXISTS` never alters existing QuestDB tables. An
+-- existing database with the old `likely_yes`/`underpriced`/`resolution_risk`
+-- columns, old markout horizons, or no `variant` column needs an
+-- operator-managed migration before using this schema; this task intentionally
+-- provides no migration.
 CREATE TABLE IF NOT EXISTS jev_signals (
   ts TIMESTAMP,
   condition_id SYMBOL CAPACITY 4096 NOCACHE,
+  state_seq LONG,
   state_hash STRING,
   state_json STRING,
   questions_json STRING,
-  likely_yes DOUBLE,
-  underpriced DOUBLE,
-  resolution_risk DOUBLE,
-  resolution_risk_conf DOUBLE,
+  yes_pressure_5s DOUBLE,
+  no_pressure_5s DOUBLE,
+  move_persists DOUBLE,
+  underreact_up DOUBLE,
+  underreact_down DOUBLE,
+  repricing_up_3_plus DOUBLE,
+  repricing_up_2 DOUBLE,
+  repricing_up_1 DOUBLE,
+  repricing_flat DOUBLE,
+  repricing_down_1 DOUBLE,
+  repricing_down_2 DOUBLE,
+  repricing_down_3_plus DOUBLE,
+  repricing_confidence DOUBLE,
+  fill_before_decay DOUBLE,
+  fill_toxic DOUBLE,
   latency_ms LONG,
+  -- Retained for schema compatibility; both are 0 until Jev usage is measured.
   tokens_in LONG,
   tokens_out LONG,
-  trigger SYMBOL CAPACITY 64
+  trigger SYMBOL CAPACITY 64,
+  variant SYMBOL CAPACITY 64
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
--- One row per Jev call, with the EXACT state that produced it (backtesting).
--- Noul answers (likely_yes, underpriced) carry no confidence; only the Score does.
+-- One row per V1 Jev call, with the EXACT state that produced it (backtesting).
+-- The five Noul outputs are stored directly; repricing_* are the seven explicit
+-- Choice buckets, and repricing_confidence is the Choice confidence.
 
 CREATE TABLE IF NOT EXISTS paper_decisions (
   ts TIMESTAMP,
@@ -110,12 +132,14 @@ CREATE TABLE IF NOT EXISTS paper_decisions (
   edge DOUBLE,
   threshold DOUBLE,
   decision SYMBOL CAPACITY 8,
+  variant SYMBOL CAPACITY 64,
   paper_price DOUBLE,
   size DOUBLE,
   fair_value DOUBLE
 ) TIMESTAMP(ts) PARTITION BY DAY;
 
--- decision: SKIP | TRADE. jev_ts links back to jev_signals.ts.
+-- decision: QUOTE | SKIP. QUOTE means decide_quote returned a quote;
+-- SKIP means it did not. `jev_ts` links back to jev_signals.ts.
 
 CREATE TABLE IF NOT EXISTS resolutions (
   condition_id SYMBOL CAPACITY 4096 NOCACHE,
@@ -128,6 +152,7 @@ CREATE TABLE IF NOT EXISTS resolutions (
 --   SELECT s.*, r.winning_outcome FROM jev_signals s
 --   LEFT JOIN resolutions r ON s.condition_id = r.condition_id
 
+-- Markout labels are recorded at all five V1 horizons, not only at resolution.
 CREATE TABLE IF NOT EXISTS maker_markouts (
   ts TIMESTAMP,
   condition_id SYMBOL CAPACITY 4096 NOCACHE,
@@ -137,8 +162,13 @@ CREATE TABLE IF NOT EXISTS maker_markouts (
   size DOUBLE,
   mid_1s DOUBLE,
   mid_5s DOUBLE,
+  mid_10s DOUBLE,
   mid_30s DOUBLE,
+  mid_60s DOUBLE,
+  variant SYMBOL CAPACITY 64,
   pnl_1s_pp DOUBLE,
   pnl_5s_pp DOUBLE,
-  pnl_30s_pp DOUBLE
+  pnl_10s_pp DOUBLE,
+  pnl_30s_pp DOUBLE,
+  pnl_60s_pp DOUBLE
 ) TIMESTAMP(ts) PARTITION BY DAY;

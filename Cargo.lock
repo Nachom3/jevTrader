@@ -3195,6 +3195,7 @@ dependencies = [
  "questdb-rs",
  "reqwest 0.13.5",
  "ringbuf",
+ "rustls",
  "serde",
  "serde_json",
  "smallvec",

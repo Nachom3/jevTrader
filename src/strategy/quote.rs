@@ -32,16 +32,17 @@ pub fn decide_quote(
     tick_size: TickSize,
     size: u64,
 ) -> Option<QuoteIntent> {
-    if stale || book.is_stale() || !should_quote(signal, thresholds) {
+    if size == 0 || stale || book.is_stale() {
         return None;
     }
+    should_quote(signal, thresholds).then_some(())?;
 
     let best_bid = book.best_bid()?;
     let best_ask = book.best_ask()?;
     let price = round_up_to_tick(best_bid, tick_size)?;
 
     // This is the maker-only invariant: never cross or join an already crossed
-    // ask. A caller can later decide how to handle a zero size; V1 does not.
+    // ask. Zero-size intents were rejected before any quote construction.
     (price < best_ask).then_some(QuoteIntent {
         side: TradeSide::Buy,
         price,
@@ -110,6 +111,21 @@ mod tests {
     #[test]
     fn stale_book_returns_no_quote() {
         assert_eq!(decide(&book(0.40, 0.45), true), None);
+    }
+
+    #[test]
+    fn zero_size_returns_no_quote() {
+        assert_eq!(
+            decide_quote(
+                &signal(),
+                &book(0.40, 0.45),
+                &QuoteThresholds::default(),
+                false,
+                TickSize::from_f64(0.01),
+                0,
+            ),
+            None
+        );
     }
 
     #[test]

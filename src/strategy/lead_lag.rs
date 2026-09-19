@@ -3,7 +3,10 @@
 //! Spec: `docs/strategy-lead-lag-v1.md`. One Jev request carries all 8 V1
 //! outputs (they evaluate in parallel over the same state). Rust owns the
 //! features and the final quote decision; Jev only judges.
+//!
+//! Executable prices serialize in Jev state JSON as integer micro-units.
 
+use jevtrader::domain::PriceTicks;
 #[allow(unused_imports)]
 pub use jevtrader::jev::response::{TickDistribution, V1Signal};
 use serde::{Deserialize, Serialize};
@@ -45,16 +48,48 @@ pub struct LeadLagFeatures {
 /// Polymarket side of the state: YES book + short price history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolySnapshot {
-    pub yes_bid: f64,
-    pub yes_ask: f64,
+    #[serde(with = "price_ticks_serde")]
+    pub yes_bid: PriceTicks,
+    #[serde(with = "price_ticks_serde")]
+    pub yes_ask: PriceTicks,
     pub bid_depth: f64,
     pub ask_depth: f64,
     pub spread: f64,
     pub book_imbalance: f64,
-    pub last_trade_price: f64,
-    pub price_1s_ago: f64,
-    pub price_5s_ago: f64,
-    pub price_30s_ago: f64,
+    #[serde(with = "price_ticks_serde")]
+    pub last_trade_price: PriceTicks,
+    #[serde(with = "price_ticks_serde")]
+    pub price_1s_ago: PriceTicks,
+    #[serde(with = "price_ticks_serde")]
+    pub price_5s_ago: PriceTicks,
+    #[serde(with = "price_ticks_serde")]
+    pub price_30s_ago: PriceTicks,
+}
+
+/// Serde adapter for executable prices represented as integer micro-units.
+pub mod price_ticks_serde {
+    use super::PriceTicks;
+    use serde::{Deserialize, Deserializer, Serializer, de};
+
+    pub fn serialize<S>(price: &PriceTicks, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(price.as_micros())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PriceTicks, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let micros = u64::deserialize(deserializer)?;
+        if micros > 1_000_000 {
+            return Err(de::Error::custom(
+                "price micro-units must be within 0..=1000000",
+            ));
+        }
+        Ok(PriceTicks::from_f64(micros as f64 / 1_000_000.0))
+    }
 }
 
 /// Pure quote rule: post-only BUY one tick over the bid, or nothing.

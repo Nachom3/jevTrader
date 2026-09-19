@@ -179,9 +179,9 @@ fn set_level(
     }
 
     if descending {
-        levels.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        levels.sort_unstable_by_key(|level| std::cmp::Reverse(level.0));
     } else {
-        levels.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        levels.sort_unstable_by_key(|left| left.0);
     }
 }
 

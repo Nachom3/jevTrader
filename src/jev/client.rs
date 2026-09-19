@@ -1,9 +1,8 @@
 //! Single-flight Jev/System One HTTP client.
 
-use super::request::SystemOneRequest;
+use super::request::{SystemOneRequest, V1State};
 use super::response::{JevEvaluation, JevParseError, parse_evaluation_json};
 use reqwest::Client;
-use serde_json::Value;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -43,21 +42,14 @@ pub enum JevError {
 /// a late signal is worse than a lost one because its originating market state
 /// may no longer be current when it reaches the strategy.
 pub async fn evaluate(
-    state_value: &Value,
+    state: &V1State,
     state_seq: u64,
     market_id: &str,
     api_key: &str,
     deadline: Duration,
 ) -> Result<JevEvaluation, JevError> {
-    let candidate_buy_price = state_value
-        .pointer("/candidate_order/price")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| {
-            JevError::Parse(JevParseError::InvalidRequestState(
-                "missing numeric candidate_order.price".to_owned(),
-            ))
-        })?;
-    let request = SystemOneRequest::new(state_value.clone(), candidate_buy_price);
+    let candidate_buy_price = state.candidate_order.price;
+    let request = SystemOneRequest::new(state.clone(), candidate_buy_price);
     let sent_at_ms = unix_time_ms();
 
     let response = http_client()
