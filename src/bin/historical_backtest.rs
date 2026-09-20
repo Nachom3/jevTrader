@@ -148,8 +148,29 @@ fn run_corpus<E: JevEvaluator>(
     runner: &mut ReplayRunner<E>,
     corpus: &str,
     config: &ReplayConfig,
+    exact_only: bool,
+    per_condition_cap: usize,
 ) -> Option<RunnerOutput> {
     let metas = read_market_metas(corpus);
+    if metas.is_empty() {
+        return None;
+    }
+    // SIGNAL ALPHA primary evidence filters to EXACT resolution specs.
+    // Smoke runs keep the inclusive default.
+    let metas: Vec<_> = if exact_only {
+        let exact: Vec<_> = metas
+            .into_iter()
+            .filter(|m| m.fidelity == Fidelity::Exact)
+            .collect();
+        if exact.is_empty() {
+            println!("exact_only=1 but no EXACT markets in corpus; aborting (no PROXY fallback)");
+            return None;
+        }
+        println!("exact_only=1 markets={}", exact.len());
+        exact
+    } else {
+        metas
+    };
     if metas.is_empty() {
         return None;
     }
@@ -269,12 +290,13 @@ fn run_corpus<E: JevEvaluator>(
         (0, 0, 0usize, 0usize, 0usize);
     for condition in conditions {
         // Per-condition pair cap: spreads the budget across buckets so one
-        // long trajectory cannot consume the whole run.
+        // long trajectory cannot consume the whole run. The SIGNAL ALPHA run
+        // raises the cap (pre-registered) to reach 500-1000 pairs.
         let remaining = config.max_pairs.saturating_sub(all_rows.len() / 2);
         if remaining == 0 {
             break;
         }
-        runner.config.max_pairs = remaining.clamp(1, 4);
+        runner.config.max_pairs = remaining.clamp(1, per_condition_cap.max(1));
         let Some(poly) = poly_by_condition.get(&condition) else {
             continue;
         };
@@ -296,9 +318,27 @@ fn run_corpus<E: JevEvaluator>(
         // Full per-market trajectory (capped): fills and markouts need
         // real future prints, not a 4-item window.
         let poly_stream: Vec<HistoricalEvent> = poly.iter().take(500).cloned().collect();
+        // Per-condition underlying window (no look-ahead, no cross-week
+        // bleed): ticks within [first_poly - 2h lookback, last_poly]. The
+        // old take(2000) head is wrong for multi-week corpora (December
+        // ticks would price April markets).
+        let last_ts = poly_stream
+            .last()
+            .map(HistoricalEvent::ts_ms)
+            .unwrap_or(first_ts);
+        let lookback_ms = 2 * 3_600_000;
         let und_stream: Vec<HistoricalEvent> = und_by_asset
             .get(&meta.1)
-            .map(|v| v.iter().take(2_000).cloned().collect())
+            .map(|v| {
+                v.iter()
+                    .filter(|e| {
+                        let t = e.ts_ms();
+                        t >= first_ts.saturating_sub(lookback_ms) && t <= last_ts
+                    })
+                    .take(50_000)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         let out = runner.run_events_by_condition(
             vec![poly_stream, und_stream],
@@ -344,8 +384,10 @@ fn execute<E: JevEvaluator>(
     runner: &mut ReplayRunner<E>,
     corpus: &str,
     config: &ReplayConfig,
+    exact_only: bool,
+    per_condition_cap: usize,
 ) -> RunnerOutput {
-    match run_corpus(runner, corpus, config) {
+    match run_corpus(runner, corpus, config, exact_only, per_condition_cap) {
         Some(output) => {
             println!("corpus=HISTORICAL dir={corpus}");
             output
@@ -383,6 +425,14 @@ fn main() {
     }
 
     let corpus = parse_arg(&args, "--corpus", "research-data/processed");
+    // SIGNAL ALPHA run knobs (run config, never thresholds): --exact-only 1
+    // restricts to EXACT resolution specs; --per-condition-cap raises pairs
+    // per market to reach the pre-registered N_complete_pairs.
+    let exact_only = parse_arg(&args, "--exact-only", "0") == "1";
+    let per_condition_cap: usize = parse_arg(&args, "--per-condition-cap", "4")
+        .parse()
+        .unwrap_or(4)
+        .clamp(1, 100);
     let real_jev = parse_arg(&args, "--real-jev", "0") == "1";
     let max_jev_calls: u64 = parse_arg(&args, "--max-jev-calls", "20")
         .parse()
@@ -398,7 +448,7 @@ fn main() {
         let evaluator = RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
             .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
         let mut runner = ReplayRunner::new(config.clone(), evaluator);
-        let output = execute(&mut runner, &corpus, &config);
+        let output = execute(&mut runner, &corpus, &config, exact_only, per_condition_cap);
         println!(
             "jev_live_calls={} budget={}",
             runner.evaluator.calls, max_jev_calls
@@ -427,7 +477,7 @@ fn main() {
         output
     } else {
         let mut runner = ReplayRunner::new(config.clone(), StubJev::new(42));
-        execute(&mut runner, &corpus, &config)
+        execute(&mut runner, &corpus, &config, exact_only, per_condition_cap)
     };
 
     let json = write_json(&output.rows).expect("json renders");

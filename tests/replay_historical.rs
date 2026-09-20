@@ -586,7 +586,7 @@ fn signal_drift_recorded_for_all_usable_evaluations_including_skips() {
         if row.pair_id.ends_with("000003") {
             assert!(row.drift_5s_pp.is_none());
         } else {
-            assert!(row.drift_5s_pp.map_or(false, |d| d.is_finite()));
+            assert!(row.drift_5s_pp.is_some_and(|d| d.is_finite()));
         }
     }
 
