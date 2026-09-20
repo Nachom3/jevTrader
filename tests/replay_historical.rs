@@ -516,3 +516,89 @@ fn empirical_latency_uses_sampled_distribution_deterministically() {
     let lat_second: Vec<u64> = second.rows.iter().map(|row| row.jev_latency_ms).collect();
     assert_eq!(lat_first, lat_second);
 }
+
+#[test]
+fn signal_drift_recorded_for_all_usable_evaluations_including_skips() {
+    // Rising mids: every healthy evaluation must carry forward drift,
+    // even when the strategy SKIPs (no quote, no fill).
+    let items = [
+        (
+            0,
+            0.39,
+            0.41,
+            100.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+        (
+            6000,
+            0.41,
+            0.43,
+            101.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+        (
+            11000,
+            0.43,
+            0.45,
+            102.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+        (
+            21000,
+            0.45,
+            0.47,
+            103.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+    ];
+    let mut healthy = ReplayRunner::new(
+        ReplayConfig::smoke("drift-skip"),
+        FixedReplayJev { error: false },
+    );
+    let out = healthy.run_synthetic(&items, 1_000_000);
+    assert_eq!(out.rows.len(), 8);
+    assert!(out.rows.iter().all(|row| !row.quoted));
+    assert!(out.rows.iter().all(|row| !row.incomplete_pair));
+    // SKIP rows carry no markouts (no fill) but must carry drift, except the
+    // tail pair which has no forward prints (honest missing, not a bug).
+    assert!(out.rows.iter().all(|row| row.markout_5s_pp.is_none()));
+    for row in &out.rows {
+        if row.pair_id.ends_with("000003") {
+            assert!(row.drift_5s_pp.is_none());
+        } else {
+            assert!(row.drift_5s_pp.map_or(false, |d| d.is_finite()));
+        }
+    }
+
+    let mut failing = ReplayRunner::new(
+        ReplayConfig::smoke("drift-error"),
+        FixedReplayJev { error: true },
+    );
+    let bad = failing.run_synthetic(&items, 1_000_000);
+    assert!(bad.rows.iter().all(|row| row.incomplete_pair));
+    assert!(
+        bad.rows
+            .iter()
+            .all(|row| row.drift_5s_pp.is_none() && row.markout_5s_pp.is_none())
+    );
+}

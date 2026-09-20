@@ -29,6 +29,21 @@ pub struct ReportRow {
     pub markout_10s_pp: Option<f64>,
     pub markout_30s_pp: Option<f64>,
     pub markout_60s_pp: Option<f64>,
+    /// SIGNAL RESEARCH: BUY-signed forward drift in pp from the eval-time mid
+    /// at `usable_at`, for EVERY usable evaluation (QUOTE or SKIP). Fill-
+    /// conditional execution labels stay in `markout_*_pp`; these answer
+    /// "did Jev anticipate the move" with no execution involved. `None` only
+    /// for branch failures (JevError) or missing forward prints.
+    #[serde(default)]
+    pub drift_1s_pp: Option<f64>,
+    #[serde(default)]
+    pub drift_5s_pp: Option<f64>,
+    #[serde(default)]
+    pub drift_10s_pp: Option<f64>,
+    #[serde(default)]
+    pub drift_30s_pp: Option<f64>,
+    #[serde(default)]
+    pub drift_60s_pp: Option<f64>,
     pub pnl_pp: f64,
     pub stale_skipped: bool,
     pub incomplete_pair: bool,
@@ -58,6 +73,12 @@ pub struct SegmentSummary {
     pub mean_markout_5s_pp: f64,
     pub mean_jev_latency_ms: f64,
     pub hit_rate_5s: f64,
+    /// SIGNAL ALPHA primary: mean + hit rate of forward drift +5s over ALL
+    /// usable evaluations (QUOTE or SKIP), not just fills.
+    pub mean_drift_5s_pp: f64,
+    pub hit_rate_drift_5s: f64,
+    /// Non-null drift +5s observations (denominator of the drift stats).
+    pub n_drift_5s: usize,
     pub total_pnl_pp: f64,
     pub pnl_per_trade: f64,
     pub stale_skips: usize,
@@ -99,6 +120,17 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
             } else {
                 mo5.iter().filter(|v| **v > 0.0).count() as f64 / mo5.len() as f64
             };
+            let drift5: Vec<f64> = rs.iter().filter_map(|r| r.drift_5s_pp).collect();
+            let mean_drift5 = if drift5.is_empty() {
+                0.0
+            } else {
+                drift5.iter().sum::<f64>() / drift5.len() as f64
+            };
+            let hit_drift = if drift5.is_empty() {
+                0.0
+            } else {
+                drift5.iter().filter(|v| **v > 0.0).count() as f64 / drift5.len() as f64
+            };
             let total_pnl: f64 = rs.iter().map(|r| r.pnl_pp).sum();
             let stale_skips = rs.iter().filter(|r| r.stale_skipped).count();
             let incomplete_pairs = rs.iter().filter(|r| r.incomplete_pair).count();
@@ -115,6 +147,9 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
                 mean_markout_5s_pp: mean_mo5,
                 mean_jev_latency_ms: mean_jev_latency,
                 hit_rate_5s: hit,
+                mean_drift_5s_pp: mean_drift5,
+                hit_rate_drift_5s: hit_drift,
+                n_drift_5s: drift5.len(),
                 total_pnl_pp: total_pnl,
                 pnl_per_trade: if fills > 0 {
                     total_pnl / fills as f64
@@ -137,11 +172,13 @@ pub fn write_json(rows: &[ReportRow]) -> Result<String, String> {
 #[must_use]
 pub fn write_markdown(summary: &[SegmentSummary]) -> String {
     let mut out = String::from("# Historical replay report\n\n");
-    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_jev_latency_ms | mean_mo5s | pnl | stale | incomplete |\n");
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_lat_ms | mean_mo5s | hit_mo5s | n_drift5s | mean_drift5s | hit_drift5s | pnl | stale | incomplete |\n");
+    out.push_str(
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+    );
     for s in summary {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.4} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.3} | {} | {:.4} | {:.3} | {:.4} | {} | {} |\n",
             s.key.variant,
             s.key.asset,
             s.key.horizon,
@@ -155,6 +192,10 @@ pub fn write_markdown(summary: &[SegmentSummary]) -> String {
             s.fills,
             s.mean_jev_latency_ms,
             s.mean_markout_5s_pp,
+            s.hit_rate_5s,
+            s.n_drift_5s,
+            s.mean_drift_5s_pp,
+            s.hit_rate_drift_5s,
             s.total_pnl_pp,
             s.stale_skips,
             s.incomplete_pairs
@@ -213,6 +254,11 @@ mod tests {
             markout_10s_pp: None,
             markout_30s_pp: None,
             markout_60s_pp: None,
+            drift_1s_pp: None,
+            drift_5s_pp: Some(0.5),
+            drift_10s_pp: None,
+            drift_30s_pp: None,
+            drift_60s_pp: None,
             pnl_pp: pnl,
             stale_skipped: false,
             incomplete_pair: false,
@@ -247,8 +293,11 @@ mod tests {
     fn markdown_renders_all_segments() {
         let rows = vec![row("CONTROL", Some(1.0), 1.0)];
         let rep = build_report(&rows);
+        assert_eq!(rep[0].n_drift_5s, 1);
+        assert!((rep[0].mean_drift_5s_pp - 0.5).abs() < 1e-12);
         let md = write_markdown(&rep);
         assert!(md.contains("CONTROL") && md.contains("mean_mo5s"));
-        assert!(md.contains("mean_jev_latency_ms"));
+        assert!(md.contains("mean_jev_latency_ms") || md.contains("mean_lat_ms"));
+        assert!(md.contains("mean_drift5s") && md.contains("hit_drift5s"));
     }
 }

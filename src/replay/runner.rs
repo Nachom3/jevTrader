@@ -679,6 +679,24 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 } else {
                     0.0
                 };
+                // SIGNAL RESEARCH: forward drift for EVERY usable evaluation
+                // (QUOTE or SKIP). Reference is the first tape mid at/after
+                // usable_at; horizons sample the same tape mids, so drift is
+                // a pure signal label with no execution content. Branch
+                // failures (JevError) or missing forward prints yield None.
+                let drift: [Option<f64>; 5] = if err.is_none() {
+                    match future_mids.iter().find(|e| e.0 >= usable_at).map(|e| e.1) {
+                        Some(ref_mid) => horizons.map(|h| {
+                            future_mids
+                                .iter()
+                                .find(|e| e.0 >= usable_at + h as i64)
+                                .map(|e| (e.1 - ref_mid) * 100.0)
+                        }),
+                        None => [None, None, None, None, None],
+                    }
+                } else {
+                    [None, None, None, None, None]
+                };
                 rows.push(ReportRow {
                     run_id: self.config.run_id.clone(),
                     pair_id: pair_id.clone(),
@@ -709,6 +727,11 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     markout_10s_pp: mo[2],
                     markout_30s_pp: mo[3],
                     markout_60s_pp: mo[4],
+                    drift_1s_pp: drift[0],
+                    drift_5s_pp: drift[1],
+                    drift_10s_pp: drift[2],
+                    drift_30s_pp: drift[3],
+                    drift_60s_pp: drift[4],
                     pnl_pp: pnl,
                     stale_skipped: stale,
                     incomplete_pair: err.is_some(),

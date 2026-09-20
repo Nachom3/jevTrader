@@ -441,20 +441,30 @@ fn main() {
     let _ = fs::write(&md_path, &md);
 
     // Console summary segmented by variant/asset/horizon (never global only).
+    // Signal drift (all usable evaluations) is the alpha readout; markouts
+    // are fill-conditional execution labels.
     let mut n_c = 0;
     let mut n_q = 0;
     let mut mo_c = Vec::new();
     let mut mo_q = Vec::new();
+    let mut drift_c = Vec::new();
+    let mut drift_q = Vec::new();
     for r in &output.rows {
         if r.variant == "CONTROL" {
             n_c += 1;
             if let Some(m) = r.markout_5s_pp {
                 mo_c.push(m);
             }
+            if let Some(d) = r.drift_5s_pp {
+                drift_c.push(d);
+            }
         } else {
             n_q += 1;
             if let Some(m) = r.markout_5s_pp {
                 mo_q.push(m);
+            }
+            if let Some(d) = r.drift_5s_pp {
+                drift_q.push(d);
             }
         }
     }
@@ -463,6 +473,13 @@ fn main() {
             0.0
         } else {
             v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
+    let hit = |v: &[f64]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().filter(|x| **x > 0.0).count() as f64 / v.len() as f64
         }
     };
     println!(
@@ -478,6 +495,15 @@ fn main() {
         output.jev_hits,
         output.jev_misses,
         out
+    );
+    println!(
+        "signal_drift_5s CONTROL n={} mean={:.4} hit={:.3} | QUANT_V1 n={} mean={:.4} hit={:.3}",
+        drift_c.len(),
+        mean(&drift_c),
+        hit(&drift_c),
+        drift_q.len(),
+        mean(&drift_q),
+        hit(&drift_q),
     );
     if real_jev {
         println!(
