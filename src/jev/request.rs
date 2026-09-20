@@ -437,23 +437,17 @@ mod tests {
 
     #[test]
     fn v3_sets_serialize_to_single_typed_questions() {
-        let fair =
-            QuestionSet::FairValue.build(PriceTicks::from_f64(0.44));
-        assert_eq!(
-            fair["fair_p_yes"]["type"],
-            serde_json::json!("noul")
+        let fair = QuestionSet::FairValue.build(PriceTicks::from_f64(0.44));
+        assert_eq!(fair["fair_p_yes"]["type"], serde_json::json!("noul"));
+        assert!(
+            fair["fair_p_yes"]["instructions"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("resolve to YES")
         );
-        assert!(fair["fair_p_yes"]["instructions"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("resolve to YES"));
 
-        let pressure =
-            QuestionSet::PressureComposite.build(PriceTicks::from_f64(0.44));
-        assert_eq!(
-            pressure["pressure_5s"]["type"],
-            serde_json::json!("choice")
-        );
+        let pressure = QuestionSet::PressureComposite.build(PriceTicks::from_f64(0.44));
+        assert_eq!(pressure["pressure_5s"]["type"], serde_json::json!("choice"));
         let criteria = pressure["pressure_5s"]["criteria"]
             .as_object()
             .expect("pressure criteria should be an object");

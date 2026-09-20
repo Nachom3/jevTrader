@@ -317,8 +317,9 @@ fn run_corpus<E: JevEvaluator>(
         // Per-condition pair cap: spreads the budget across buckets so one
         // long trajectory cannot consume the whole run. The SIGNAL ALPHA run
         // raises the cap (pre-registered) to reach 500-1000 pairs.
-        let remaining =
-            config.max_pairs.saturating_sub(all_rows.len() / config.arms.len().max(1));
+        let remaining = config
+            .max_pairs
+            .saturating_sub(all_rows.len() / config.arms.len().max(1));
         if remaining == 0 {
             break;
         }
@@ -355,6 +356,24 @@ fn run_corpus<E: JevEvaluator>(
         };
         let poly_stream: Vec<HistoricalEvent> =
             poly.iter().step_by(stride).take(500).cloned().collect();
+        // Dense label trajectory: unstrided head (take 500) so fills,
+        // markouts, and drift sample real future prints even when the
+        // evaluated stream is stratified. Legacy runs (stride 1) are
+        // unaffected: identical series.
+        let label_mids: Vec<(i64, f64)> = poly
+            .iter()
+            .take(500)
+            .filter_map(|ev| match ev {
+                HistoricalEvent::PolyTrade { ts_ms, price, .. } => Some((*ts_ms, *price)),
+                HistoricalEvent::PolyTop {
+                    ts_ms,
+                    best_bid,
+                    best_ask,
+                    ..
+                } => Some((*ts_ms, (best_bid + best_ask) / 2.0)),
+                _ => None,
+            })
+            .collect();
         // Windowed underlying for THIS condition only: [first_poly - 2h,
         // last_poly], thinned to ~1 tick/s (thin 16) and capped. No
         // look-ahead (upper bound) and no cross-week bleed (lower bound).
@@ -391,6 +410,7 @@ fn run_corpus<E: JevEvaluator>(
             &[single_map[&condition].clone()],
             &single_map,
             &questions,
+            Some(&label_mids),
         );
         jev_hits = out.jev_hits;
         jev_misses = out.jev_misses;

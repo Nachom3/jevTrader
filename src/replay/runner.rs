@@ -420,10 +420,7 @@ enum ParsedArm {
 
 /// Validates one raw envelope against the arm's question set. Values pass
 /// through verbatim; no renormalization, no thresholding, no decisions.
-fn parse_arm_envelope(
-    questions: QuestionSet,
-    envelope_json: &str,
-) -> Result<ParsedArm, String> {
+fn parse_arm_envelope(questions: QuestionSet, envelope_json: &str) -> Result<ParsedArm, String> {
     let response: SystemOneResponse =
         serde_json::from_str(envelope_json).map_err(|e| format!("envelope decode: {e}"))?;
     match questions {
@@ -606,6 +603,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             resolution_at_ms,
             &std::collections::HashMap::new(),
             &[],
+            None,
         )
     }
 
@@ -621,6 +619,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         resolution_at_ms: i64,
         questions: &std::collections::HashMap<String, (String, String)>,
         dense_ticks: &[ExternalTick],
+        full_mids: Option<&[(i64, f64)]>,
     ) -> RunnerOutput {
         let mut rows = Vec::new();
         let mut signals: Vec<SignalRecord> = Vec::new();
@@ -635,10 +634,15 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         // historical. Fills and markouts are post-facto LABELS evaluated
         // against later prints; the quote DECISION only ever uses history
         // accumulated through T (underlying, poly_hist, mids above).
+        // Label trajectory for fills/markouts/drift: the caller's full
+        // poly mid series when provided (strided runs), else the items
+        // themselves (legacy: synthetic path and unstrided runs). Labels
+        // are post-facto and never leak into the quote decision.
         let future_mids: Vec<(i64, f64)> = items
             .iter()
             .map(|it| (it.ts_ms, (it.book_bid + it.book_ask) / 2.0))
             .collect();
+        let labels: &[(i64, f64)] = full_mids.unwrap_or(&future_mids);
         let markout_tracker = MarkoutTracker::new();
         let _ = markout_tracker;
         let jev_latency = self.config.latency.jev_latency_ms();
@@ -824,7 +828,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 let live = outcome.live;
                 let mut branch_error = outcome.error;
                 let usable_at = ts + lat as i64;
-                let seq_lag = future_mids
+                let seq_lag = labels
                     .iter()
                     .filter(|e| e.0 > ts && e.0 <= usable_at)
                     .count() as u64;
@@ -910,7 +914,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 let quote_price = if quoted { candidate.to_f64() } else { 0.0 };
                 // Fill check on FUTURE prints only (no look-ahead into the
                 // decision itself; fills use prints after usable_at).
-                let future_prints: Vec<(i64, f64, f64)> = future_mids
+                let future_prints: Vec<(i64, f64, f64)> = labels
                     .iter()
                     .filter(|e| e.0 >= usable_at)
                     .take(30)
@@ -938,7 +942,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 let fill_ts = usable_at;
                 let mo: [Option<f64>; 5] = if fill.filled {
                     let ms: [Option<f64>; 5] = horizons.map(|h| {
-                        future_mids
+                        labels
                             .iter()
                             .find(|e| e.0 >= fill_ts + h as i64)
                             .map(|e| e.1)
@@ -958,9 +962,9 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 // a pure signal label with no execution content. Branch
                 // failures (JevError) or missing forward prints yield None.
                 let drift: [Option<f64>; 5] = if err.is_none() {
-                    match future_mids.iter().find(|e| e.0 >= usable_at).map(|e| e.1) {
+                    match labels.iter().find(|e| e.0 >= usable_at).map(|e| e.1) {
                         Some(ref_mid) => horizons.map(|h| {
-                            future_mids
+                            labels
                                 .iter()
                                 .find(|e| e.0 >= usable_at + h as i64)
                                 .map(|e| (e.1 - ref_mid) * 100.0)
@@ -1054,6 +1058,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             market_meta,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            None,
         )
     }
 
@@ -1077,6 +1082,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             (String, String, String, Split, Fidelity, String),
         >,
         questions: &std::collections::HashMap<String, (String, String)>,
+        label_mids: Option<&[(i64, f64)]>,
     ) -> RunnerOutput {
         // Tag events with their stream index before the merge so books
         // stay per-stream after event-time ordering.
@@ -1202,7 +1208,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             .map(|i| horizon_secs(&i.horizon))
             .unwrap_or(300);
         let resolution_at_ms = items.last().map_or(0, |i| i.ts_ms) + horizon_secs as i64 * 1000;
-        self.run_synthetic_with(&items, resolution_at_ms, questions, &dense)
+        self.run_synthetic_with(&items, resolution_at_ms, questions, &dense, label_mids)
     }
 }
 

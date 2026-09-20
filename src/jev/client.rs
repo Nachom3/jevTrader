@@ -50,8 +50,7 @@ pub async fn evaluate(
 ) -> Result<JevEvaluation, JevError> {
     let candidate_buy_price = state.candidate_order.price;
     let questions = crate::jev::request::QuestionSet::V1.build(candidate_buy_price);
-    let (body, sent_at_ms, received_at_ms) =
-        post(state, &questions, api_key, deadline).await?;
+    let (body, sent_at_ms, received_at_ms) = post(state, &questions, api_key, deadline).await?;
 
     parse_evaluation_json(&body, market_id, state_seq, sent_at_ms, received_at_ms)
         .map_err(JevError::Parse)

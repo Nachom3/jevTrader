@@ -20,8 +20,8 @@ use jevtrader::replay::report::write_markdown;
 use jevtrader::replay::walkforward::WalkforwardWindow;
 use jevtrader::replay::{
     Fidelity, FillProfile, FillSimulator, HistoricalEvent, HistoricalSource, InMemorySource,
-    JevEvaluator, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split,
-    StubJev, Synchronizer, SyntheticItem, as_of_backward, build_report,
+    JevEvaluator, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split, StubJev,
+    Synchronizer, SyntheticItem, as_of_backward, build_report,
 };
 use jevtrader::state::feature_builder::{
     ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
@@ -594,4 +594,52 @@ fn micro_arm_diverges_from_v1_given_real_microstructure() {
     let ups: Vec<f64> = out.signals.iter().map(|s| s.signal.underreact_up).collect();
     assert!(!(ups[0] == ups[1] && ups[1] == ups[2]));
     assert!(out.signals.iter().all(|s| !s.live));
+}
+
+#[test]
+fn strided_labels_sample_dense_future_prints() {
+    // Regression: with stratified (sparse) decision items, drift labels
+    // must sample the dense trajectory, not the sparse items (which
+    // collapse every horizon onto one print and yield exactly 0.0).
+    let items = vec![
+        mk_item(0, 0.40, 0.42, 100.0, "BTC-5m", "BTC", "5m"),
+        mk_item(60_000, 0.45, 0.47, 101.0, "BTC-5m", "BTC", "5m"),
+    ];
+    // Dense prints: mid drifts +1¢/s from 0.41.
+    let full_mids: Vec<(i64, f64)> = (0..=120)
+        .map(|s| (s * 1000, 0.41 + s as f64 * 0.0001))
+        .collect();
+    let mut runner = ReplayRunner::new(
+        ReplayConfig::smoke("dense-labels"),
+        FixedReplayJev { error: false },
+    );
+    let out = runner.run_synthetic_with(
+        &items,
+        1_000_000,
+        &std::collections::HashMap::new(),
+        &[],
+        Some(&full_mids),
+    );
+    let drifts: Vec<f64> = out.rows.iter().filter_map(|r| r.drift_5s_pp).collect();
+    assert!(!drifts.is_empty());
+    assert!(drifts.iter().any(|d| d.abs() > 1e-9));
+    // Same call without dense labels collapses to zero drift (documents
+    // why the override exists).
+    let mut runner2 = ReplayRunner::new(
+        ReplayConfig::smoke("sparse-labels"),
+        FixedReplayJev { error: false },
+    );
+    let out2 = runner2.run_synthetic_with(
+        &items,
+        1_000_000,
+        &std::collections::HashMap::new(),
+        &[],
+        None,
+    );
+    assert!(
+        out2.rows
+            .iter()
+            .filter_map(|r| r.drift_5s_pp)
+            .all(|d| d == 0.0)
+    );
 }

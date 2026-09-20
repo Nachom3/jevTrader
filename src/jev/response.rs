@@ -428,10 +428,8 @@ mod tests {
     }
 
     fn v3_fair_payload() -> SystemOneResponse {
-        serde_json::from_str(
-            r#"{"answers": {"fair_p_yes": {"type": "noul", "noul": 0.62}}}"#,
-        )
-        .expect("fixture should decode")
+        serde_json::from_str(r#"{"answers": {"fair_p_yes": {"type": "noul", "noul": 0.62}}}"#)
+            .expect("fixture should decode")
     }
 
     fn v3_pressure_payload() -> SystemOneResponse {
@@ -466,8 +464,14 @@ mod tests {
         assert!((expectation - 0.25).abs() < 1e-12);
         assert_eq!(confidence, 0.6);
         let mut missing = v3_pressure_payload();
-        missing.answers.get_mut("pressure_5s").unwrap()
-            .probabilities.as_mut().unwrap().remove("NEUTRAL");
+        missing
+            .answers
+            .get_mut("pressure_5s")
+            .unwrap()
+            .probabilities
+            .as_mut()
+            .unwrap()
+            .remove("NEUTRAL");
         assert!(matches!(
             parse_pressure(&missing),
             Err(JevParseError::MissingBucket(_))
