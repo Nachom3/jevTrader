@@ -103,6 +103,123 @@ pub fn read_parquet_chunks(
     Ok(out)
 }
 
+/// Windowed underlying read for one replay condition (RAM-bounded).
+///
+/// Scans `path` batch by batch (never the whole file) and keeps only
+/// `UnderlyingTick` rows for `asset` with `lo_ms <= ts_ms <= hi_ms`,
+/// uniformly thinned by `thin_every` (stride over the global row index, so
+/// density stays ~1/thin across the window) up to `limit_rows`. The merged
+/// multi-week underlying file is tens of millions of rows; the old
+/// head-limit read silently priced April markets with December ticks.
+/// Predicate: time window + asset only, no look-ahead by construction.
+pub fn read_underlying_window(
+    path: &str,
+    asset: &str,
+    lo_ms: i64,
+    hi_ms: i64,
+    thin_every: usize,
+    limit_rows: usize,
+) -> Result<Vec<HistoricalEvent>, String> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs::File;
+
+    let thin = thin_every.max(1);
+    let mut out = Vec::new();
+    let mut kept: usize = 0;
+    // Row-group skipping from ts_ms min/max statistics: the merged file has
+    // hundreds of day-clustered groups, and a condition window touches only
+    // a few. Groups with unknown statistics are scanned (safe fallback).
+    let selection = row_group_selection(path, lo_ms, hi_ms);
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| format!("{path}: {e}"))?
+        .with_batch_size(8192);
+    if let Some(selection) = selection {
+        builder = builder.with_row_selection(selection);
+    }
+    let reader = builder.build().map_err(|e| format!("{path}: {e}"))?;
+    for batch in reader {
+        if out.len() >= limit_rows {
+            break;
+        }
+        let batch = batch.map_err(|e| format!("{path}: {e}"))?;
+        let mut tmp = Vec::new();
+        decode_batch(&batch, path, &mut tmp, usize::MAX);
+        for ev in tmp {
+            if out.len() >= limit_rows {
+                break;
+            }
+            if let HistoricalEvent::UnderlyingTick {
+                ts_ms, asset: a, ..
+            } = &ev
+            {
+                if a != asset || *ts_ms < lo_ms || *ts_ms > hi_ms {
+                    continue;
+                }
+                if kept.is_multiple_of(thin) {
+                    out.push(ev);
+                }
+                kept += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Row selection over row groups whose ts_ms statistics overlap [lo_ms, hi_ms].
+///
+/// Returns `None` when statistics are unavailable (caller scans everything).
+/// Uses only file-footer metadata: no batch is decoded here.
+fn row_group_selection(
+    path: &str,
+    lo_ms: i64,
+    hi_ms: i64,
+) -> Option<parquet::arrow::arrow_reader::RowSelection> {
+    use parquet::arrow::arrow_reader::RowSelector;
+    use parquet::file::reader::{FileReader, SerializedFileReader};
+    use parquet::file::statistics::Statistics;
+    use std::fs::File;
+
+    let file = File::open(path).ok()?;
+    let reader = SerializedFileReader::new(file).ok()?;
+    let metadata = reader.metadata();
+    if metadata.num_row_groups() == 0 {
+        return None;
+    }
+    // Locate the ts_ms column in the first row group.
+    let first = metadata.row_group(0);
+    let mut ts_idx = None;
+    for i in 0..first.num_columns() {
+        if first.column(i).column_descr().name() == "ts_ms" {
+            ts_idx = Some(i);
+            break;
+        }
+    }
+    let ts_idx = ts_idx?;
+    let mut selectors = Vec::with_capacity(metadata.num_row_groups());
+    for g in 0..metadata.num_row_groups() {
+        let group = metadata.row_group(g);
+        let n = group.num_rows() as usize;
+        let overlap = match group.column(ts_idx).statistics() {
+            Some(Statistics::Int64(stats)) => match (stats.min_opt(), stats.max_opt()) {
+                (Some(mn), Some(mx)) => *mn <= hi_ms && *mx >= lo_ms,
+                _ => true,
+            },
+            // Unknown or non-int64 statistics: scan rather than risk a gap.
+            _ => true,
+        };
+        selectors.push(if overlap {
+            RowSelector::select(n)
+        } else {
+            RowSelector::skip(n)
+        });
+    }
+    Some(selectors.into())
+}
+
 /// Maps one Arrow batch to events by schema: tape rows carry
 /// `condition_id` + `yes_price`; underlying rows carry `asset` + `ts_ms`.
 fn decode_batch(

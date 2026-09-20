@@ -10,7 +10,7 @@ use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regime
 use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
     Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
-    Split, StubJev, build_report, write_json, write_markdown,
+    Split, StubJev, build_report, read_underlying_window, write_json, write_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -181,13 +181,11 @@ fn run_corpus<E: JevEvaluator>(
     if tape.is_empty() {
         return None;
     }
-    let underlying = ChunkEventSource::new(
-        vec![format!("{corpus}/underlying_market_data.parquet")],
-        8192,
-    )
-    .read_parquet_chunks(50_000)
-    .unwrap_or_default();
-    // Group tape per condition, underlying per asset.
+    let underlying_path = format!("{corpus}/underlying_market_data.parquet");
+    // Group tape per condition. Underlying is read PER CONDITION below with
+    // read_underlying_window (time-bounded, thinned): the merged multi-week
+    // file holds 40M rows, so a global head-read would price April markets
+    // with December ticks and blow RAM.
     let mut poly_by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
     for ev in tape {
         if let HistoricalEvent::PolyTrade { condition_id, .. } = &ev {
@@ -195,12 +193,6 @@ fn run_corpus<E: JevEvaluator>(
                 .entry(condition_id.clone())
                 .or_default()
                 .push(ev);
-        }
-    }
-    let mut und_by_asset: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
-    for ev in underlying {
-        if let HistoricalEvent::UnderlyingTick { asset, .. } = &ev {
-            und_by_asset.entry(asset.clone()).or_default().push(ev);
         }
     }
     let meta_by_condition: HashMap<String, (String, String, String, Split, Fidelity, String)> =
@@ -318,28 +310,22 @@ fn run_corpus<E: JevEvaluator>(
         // Full per-market trajectory (capped): fills and markouts need
         // real future prints, not a 4-item window.
         let poly_stream: Vec<HistoricalEvent> = poly.iter().take(500).cloned().collect();
-        // Per-condition underlying window (no look-ahead, no cross-week
-        // bleed): ticks within [first_poly - 2h lookback, last_poly]. The
-        // old take(2000) head is wrong for multi-week corpora (December
-        // ticks would price April markets).
+        // Windowed underlying for THIS condition only: [first_poly - 2h,
+        // last_poly], thinned to ~1 tick/s (thin 16) and capped. No
+        // look-ahead (upper bound) and no cross-week bleed (lower bound).
         let last_ts = poly_stream
             .last()
             .map(HistoricalEvent::ts_ms)
             .unwrap_or(first_ts);
-        let lookback_ms = 2 * 3_600_000;
-        let und_stream: Vec<HistoricalEvent> = und_by_asset
-            .get(&meta.1)
-            .map(|v| {
-                v.iter()
-                    .filter(|e| {
-                        let t = e.ts_ms();
-                        t >= first_ts.saturating_sub(lookback_ms) && t <= last_ts
-                    })
-                    .take(50_000)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+        let und_stream: Vec<HistoricalEvent> = read_underlying_window(
+            &underlying_path,
+            &meta.1,
+            first_ts.saturating_sub(2 * 3_600_000),
+            last_ts,
+            16,
+            50_000,
+        )
+        .unwrap_or_default();
         let out = runner.run_events_by_condition(
             vec![poly_stream, und_stream],
             &[single_map[&condition].clone()],

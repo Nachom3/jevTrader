@@ -34,7 +34,7 @@ pub use runner::{
     JevEvaluator, JevOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput, StubJev,
     SyntheticItem,
 };
-pub use source::{ChunkEventSource, HistoricalSource, InMemorySource};
+pub use source::{ChunkEventSource, HistoricalSource, InMemorySource, read_underlying_window};
 pub use synchronizer::{SynchronizedEvent, Synchronizer, as_of_backward};
 pub use types::{
     Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyDistribution, LatencyProfile, Regime,
