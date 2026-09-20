@@ -2,12 +2,12 @@
 
 import argparse
 import contextlib
+import math
 import re
 import sys
 
 import polars as pl
 import yaml
-
 from common import (
     budget_guard,
     ensure_dirs,
@@ -32,6 +32,76 @@ def norm_text(value) -> str:
         return str(value).lower()
     except Exception:
         return ""
+
+
+def text_value(value) -> str:
+    try:
+        return "" if value is None else str(value)
+    except Exception:
+        return ""
+
+
+def first_value(row: dict, *keys: str):
+    for key in keys:
+        value = row.get(key)
+        if value is not None and text_value(value).strip():
+            return value
+    return ""
+
+
+def optional_float(value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None
+    return parsed
+
+
+def load_previous_resolution(path: str) -> dict:
+    """Keep enrichment columns when discovery is run again over the same corpus."""
+    fields = (
+        "resolution_rules",
+        "resolution_source",
+        "reference",
+        "strike",
+        "start_at",
+        "end_at",
+    )
+    try:
+        previous = pl.scan_parquet(path).collect()
+    except Exception:
+        return {}
+    saved = {}
+    for row in previous.to_dicts():
+        values = {field: row.get(field) for field in fields if field in row}
+        for key_name in ("condition_id", "market_id"):
+            key = text_value(row.get(key_name)).strip()
+            if key:
+                saved[key] = values
+    return saved
+
+
+def choose_value(current, previous, key: str):
+    if current is not None and text_value(current).strip():
+        return current
+    return previous.get(key, current)
+
+
+def ensure_resolution_columns(df: pl.DataFrame) -> pl.DataFrame:
+    types = {
+        "reference": pl.Utf8,
+        "strike": pl.Float64,
+        "start_at": pl.Utf8,
+        "end_at": pl.Utf8,
+    }
+    for name, dtype in types.items():
+        if name not in df.columns:
+            df = df.with_columns(pl.lit(None, dtype=dtype).alias(name))
+        else:
+            df = df.with_columns(pl.col(name).cast(dtype, strict=False).alias(name))
+    return df
 
 
 def guess_asset(*texts: str) -> str:
@@ -142,6 +212,8 @@ def main() -> None:
         "slug",
         "eventTitle",
         "eventSlug",
+        "eventId",
+        "event_id",
         "conditionId",
         "condition_id",
         "marketId",
@@ -150,6 +222,10 @@ def main() -> None:
         "noTokenId",
         "startTime",
         "endTime",
+        "start_at",
+        "end_at",
+        "reference",
+        "strike",
         "resolutionSource",
         "resolution_source",
         "rules",
@@ -164,6 +240,7 @@ def main() -> None:
     except Exception as exc:
         raise RuntimeError(f"collect failed: {exc}") from exc
     print(f"markets rows: {len(df)}")
+    previous_resolution = load_previous_resolution(args.out)
     ren = {}
     for c in df.columns:
         low = c.lower()
@@ -175,9 +252,11 @@ def main() -> None:
         df = df.rename(ren)
     rows = []
     for r in df.to_dicts():
-        q = r.get("question", "")
-        slug = r.get("slug", "")
-        evt = r.get("eventTitle", "") or r.get("eventSlug", "")
+        q = first_value(r, "question")
+        slug = first_value(r, "slug")
+        event_title = first_value(r, "eventTitle", "event_title")
+        event_slug = first_value(r, "eventSlug", "event_slug")
+        evt = event_title or event_slug
         asset = guess_asset(q, slug, evt)
         if asset not in ("BTC", "ETH"):
             continue
@@ -194,27 +273,53 @@ def main() -> None:
         horizon = guess_horizon(q, slug, evt, duration_s=dur)
         if horizon not in ("5m", "15m", "1h", "4h"):
             continue
-        cid = str(r.get("condition_id", ""))
+        cid = text_value(r.get("condition_id")).strip()
         if not cid:
             continue
+        market_id = text_value(first_value(r, "market_id")).strip() or cid
+        previous = previous_resolution.get(cid) or previous_resolution.get(
+            market_id, {}
+        )
+        resolution_rules = choose_value(
+            first_value(r, "rules", "description", "resolution_rules"),
+            previous,
+            "resolution_rules",
+        )
+        resolution_source = choose_value(
+            first_value(r, "resolutionSource", "resolution_source"),
+            previous,
+            "resolution_source",
+        )
+        reference = choose_value(first_value(r, "reference"), previous, "reference")
+        strike = optional_float(choose_value(r.get("strike"), previous, "strike"))
+        start_at = choose_value(first_value(r, "start_at"), previous, "start_at")
+        if not text_value(start_at).strip():
+            start_at = first_value(r, "startTime")
+        end_at = choose_value(first_value(r, "end_at"), previous, "end_at")
+        if not text_value(end_at).strip():
+            end_at = first_value(r, "endTime")
         reason = f"asset={asset} horizon={horizon} via text+dur"
         rows.append(
             {
-                "market_id": str(r.get("market_id", cid)),
+                "market_id": market_id,
                 "condition_id": cid,
-                "event_id": str(r.get("eventId", r.get("event_id", ""))),
-                "yes_token_id": str(r.get("yesTokenId", r.get("yes_token_id", ""))),
-                "no_token_id": str(r.get("noTokenId", r.get("no_token_id", ""))),
+                "event_id": text_value(first_value(r, "event_id", "eventId")),
+                "event_slug": text_value(event_slug),
+                "event_title": text_value(event_title),
+                "yes_token_id": text_value(
+                    first_value(r, "yesTokenId", "yes_token_id")
+                ),
+                "no_token_id": text_value(first_value(r, "noTokenId", "no_token_id")),
                 "asset": asset,
                 "horizon": horizon,
-                "question": str(q),
-                "slug": str(slug),
-                "resolution_rules": str(r.get("rules", r.get("description", "")))[
-                    :4000
-                ],
-                "resolution_source": str(
-                    r.get("resolutionSource", r.get("resolution_source", ""))
-                ),
+                "question": text_value(q),
+                "slug": text_value(slug),
+                "resolution_rules": text_value(resolution_rules)[:4000],
+                "resolution_source": text_value(resolution_source),
+                "reference": text_value(reference),
+                "strike": strike,
+                "start_at": text_value(start_at),
+                "end_at": text_value(end_at),
                 "duration_s": dur,
                 "source_dataset": "SII-WANGZJ/Polymarket_data",
                 "selection_reason": reason,
@@ -255,12 +360,15 @@ def main() -> None:
     if len(sel) > 0:
         for r in sel.to_dicts():
             src_txt = norm_text(r.get("resolution_source", ""))
-            rules = norm_text(r.get("resolution_rules", ""))
-            has_src = (
-                "binance" in src_txt or "coinbase" in src_txt or "chainlink" in src_txt
+            rules = text_value(r.get("resolution_rules", ""))
+            strike = optional_float(r.get("strike"))
+            has_src = any(
+                venue in src_txt for venue in ("binance", "coinbase", "chainlink")
             )
-            if has_src or "reference" in rules:
-                label = "EXACT" if len(rules) > 50 else "PROXY"
+            if has_src and len(rules) > 50 and strike is not None:
+                label = "EXACT"
+            elif rules or src_txt:
+                label = "PROXY"
             else:
                 label = "UNKNOWN"
             specs.append(
@@ -269,14 +377,19 @@ def main() -> None:
                     "market_id": r["market_id"],
                     "asset": r["asset"],
                     "horizon": r["horizon"],
-                    "resolution_source": r["resolution_source"],
-                    "rule_excerpt": r["resolution_rules"][:1000],
+                    "resolution_source": text_value(r.get("resolution_source")),
+                    "rule_excerpt": rules[:1000],
+                    "reference": text_value(r.get("reference")),
+                    "strike": strike,
+                    "start_at": text_value(r.get("start_at")),
+                    "end_at": text_value(r.get("end_at")),
                     "fidelity": label,
                 }
             )
     try:
+        sel = ensure_resolution_columns(sel)
         sel.write_parquet(args.out)
-        pl.DataFrame(specs).write_parquet(args.specs_out)
+        ensure_resolution_columns(pl.DataFrame(specs)).write_parquet(args.specs_out)
     except Exception as exc:
         raise RuntimeError(f"write failed: {exc}") from exc
     print(f"selected={len(sel)} -> {args.out}")

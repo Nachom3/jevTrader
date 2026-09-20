@@ -63,6 +63,7 @@ impl Fidelity {
 }
 
 /// Per-market resolution contract (never a global asset mapping).
+/// Primary evidence must filter this contract to `Fidelity::Exact`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolutionSpec {
     pub condition_id: String,
@@ -73,6 +74,10 @@ pub struct ResolutionSpec {
     pub resolution_rule_excerpt: String,
     pub fidelity: Fidelity,
     pub resolution_at_ms: i64,
+    pub reference: Option<String>,
+    pub strike: Option<f64>,
+    pub start_at: Option<String>,
+    pub end_at: Option<String>,
 }
 
 /// Volatility x trend regime assigned from lightweight 1m data.
