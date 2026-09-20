@@ -602,3 +602,44 @@ fn signal_drift_recorded_for_all_usable_evaluations_including_skips() {
             .all(|row| row.drift_5s_pp.is_none() && row.markout_5s_pp.is_none())
     );
 }
+
+#[test]
+fn pair_ids_stay_unique_across_per_condition_calls() {
+    // run_corpus replays one condition per call on a shared runner; without
+    // a namespace, seq restarts at 0 and pair_ids collide across conditions.
+    let item = (
+        1000,
+        0.40,
+        0.45,
+        100.0,
+        "BTC-5m".to_owned(),
+        "BTC".to_owned(),
+        "5m".to_owned(),
+        Split::Exploration,
+        Fidelity::Exact,
+        "NORMAL_VOL-SIDEWAYS".to_owned(),
+    );
+    let mut cfg = ReplayConfig::smoke("ns-run");
+    cfg.max_pairs = 10;
+    let mut runner = ReplayRunner::new(cfg, StubJev::new(7));
+    runner.config.pair_namespace = "cond-A".to_owned();
+    let a = runner.run_synthetic(std::slice::from_ref(&item), 1_000_000);
+    runner.config.pair_namespace = "cond-B".to_owned();
+    let b = runner.run_synthetic(std::slice::from_ref(&item), 1_000_000);
+    assert_eq!(a.rows.len(), 2);
+    assert_eq!(b.rows.len(), 2);
+    let ids_a: Vec<&str> = a.rows.iter().map(|row| row.pair_id.as_str()).collect();
+    let ids_b: Vec<&str> = b.rows.iter().map(|row| row.pair_id.as_str()).collect();
+    assert!(ids_a.iter().all(|id| id.contains("cond-A")));
+    assert!(ids_b.iter().all(|row| row.contains("cond-B")));
+    for id in ids_a.iter().chain(ids_b.iter()) {
+        assert_eq!(
+            ids_a.iter().filter(|x| *x == *id).count() + ids_b.iter().filter(|x| *x == *id).count(),
+            2,
+            "pair_id {id} must appear exactly twice (CONTROL + QUANT_V1)"
+        );
+    }
+    // Within one pair the two rows share pair_id across variants.
+    assert_eq!(a.rows[0].pair_id, a.rows[1].pair_id);
+    assert_ne!(a.rows[0].pair_id, b.rows[0].pair_id);
+}

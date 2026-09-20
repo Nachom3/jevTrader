@@ -125,7 +125,7 @@ pub enum JevParseError {
     MissingBucket(&'static str),
     #[error("repricing distribution contains unexpected bucket `{0}`")]
     UnexpectedBucket(String),
-    #[error("repricing distribution sums to {0}, expected 1 ± 1e-6")]
+    #[error("repricing distribution sums to {0}, expected 1 ± 0.02")]
     InvalidDistributionSum(f64),
     #[error("repricing confidence must be finite and in [0, 1], got {0}")]
     InvalidConfidence(f64),
@@ -133,7 +133,11 @@ pub enum JevParseError {
     InvalidRequestState(String),
 }
 
-const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
+/// Tolerance for the 7-bucket repricing distribution sum. Jev rounds bucket
+/// probabilities to 2 decimals, so live sums of 0.99/1.01 are rounding
+/// artifacts, not malformed judgments; values are kept verbatim and never
+/// renormalized. Genuinely broken distributions (e.g. 0.9/1.1) still fail.
+const DISTRIBUTION_TOLERANCE: f64 = 2e-2;
 
 /// Parse and validate the eight V1 answers from a decoded response envelope.
 pub fn parse_v1_signal(response: &SystemOneResponse) -> Result<V1Signal, JevParseError> {
@@ -376,12 +380,30 @@ mod tests {
             .probabilities
             .as_mut()
             .unwrap()
-            .insert("FLAT".to_owned(), 0.13);
+            .insert("FLAT".to_owned(), 0.20);
 
         assert!(matches!(
             parse_v1_signal(&response),
             Err(JevParseError::InvalidDistributionSum(_))
         ));
+    }
+
+    #[test]
+    fn accepts_two_decimal_rounding_sums_verbatim() {
+        // Live Jev rounds buckets to 2 decimals (observed sums 0.99/1.01).
+        // Accepted without renormalization: stored values stay verbatim.
+        let mut response = valid_payload();
+        response
+            .answers
+            .get_mut("repricing_ticks")
+            .unwrap()
+            .probabilities
+            .as_mut()
+            .unwrap()
+            .insert("FLAT".to_owned(), 0.11);
+        let signal = parse_v1_signal(&response).expect("0.99 rounding is valid");
+        assert_eq!(signal.repricing.flat, 0.11);
+        assert_eq!(signal.repricing.up_1, 0.44);
     }
 
     #[test]

@@ -278,6 +278,7 @@ fn run_corpus<E: JevEvaluator>(
         round += 1;
     }
     let mut all_rows = Vec::new();
+    let mut skipped_no_meta = 0usize;
     let (mut jev_hits, mut jev_misses, mut stale, mut incomplete, mut jerrs) =
         (0, 0, 0usize, 0usize, 0usize);
     for condition in conditions {
@@ -289,17 +290,19 @@ fn run_corpus<E: JevEvaluator>(
             break;
         }
         runner.config.max_pairs = remaining.clamp(1, per_condition_cap.max(1));
+        // Pair namespace = condition: pair_ids stay globally unique across
+        // the per-condition replay calls (methodology joins on run_id+pair_id).
+        runner.config.pair_namespace = condition.clone();
         let Some(poly) = poly_by_condition.get(&condition) else {
             continue;
         };
-        let meta = meta_by_condition.get(&condition).cloned().unwrap_or((
-            "UNKNOWN".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Unknown,
-            "UNKNOWN-UNKNOWN".to_owned(),
-        ));
+        // Never replay a condition without its own metadata (e.g. non-EXACT
+        // conditions under --exact-only): borrowing another market's tuple
+        // or a default would contaminate the evidence. Counted, not run.
+        let Some(meta) = meta_by_condition.get(&condition).cloned() else {
+            skipped_no_meta += 1;
+            continue;
+        };
         // Regime at this condition's first trade (asset-aware, backward-only).
         let first_ts = poly.first().map(HistoricalEvent::ts_ms).unwrap_or(0);
         let regime = regime_at(&regimes, &meta.1, first_ts);
@@ -339,6 +342,7 @@ fn run_corpus<E: JevEvaluator>(
         jerrs += out.jev_errors;
         all_rows.extend(out.rows);
     }
+    println!("skipped_no_meta={skipped_no_meta}");
     Some(jevtrader::replay::RunnerOutput {
         rows: all_rows,
         jev_hits,

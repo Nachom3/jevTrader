@@ -7091,6 +7091,197 @@
       "rows_before": null,
       "rows_after": null,
       "market_count": null
+    },
+    {
+      "dataset": "Polymarket-Gamma",
+      "original_file": "event-specs-exact-join",
+      "local_path": "research-data/processed/resolution_specs.parquet",
+      "downloaded_at": "2026-09-20T02:08:13.536252+00:00",
+      "checksum_sha256": "3efcce4904090560bf9d30d30c8171fc1cf651d2460a29d3425fac75f95fc2bb",
+      "file_size_bytes": 33113,
+      "date_range": [],
+      "selected_range": [],
+      "filters": {
+        "matched": 366,
+        "of": 366,
+        "fidelity": {
+          "EXACT": 340,
+          "PROXY": 26
+        },
+        "limit": 0,
+        "method": "SII event_id -> Gamma /events/<id>, conditionId match"
+      },
+      "rows_before": 366,
+      "rows_after": 366,
+      "market_count": 366
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p1.parquet",
+      "downloaded_at": "2026-09-20T02:11:15.584332+00:00",
+      "checksum_sha256": "dc695ea1f64682236b6283effb3273e0b6f40e7ccb4e595dc0862137cfeedd41",
+      "file_size_bytes": 37958043,
+      "date_range": [
+        "2025-12-23",
+        "2025-12-26"
+      ],
+      "selected_range": [
+        "2025-12-23T00:00:00+00:00",
+        "2025-12-27T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [],
+          "ETHUSDT": []
+        }
+      },
+      "rows_before": null,
+      "rows_after": 6089092,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p2.parquet",
+      "downloaded_at": "2026-09-20T02:11:29.274715+00:00",
+      "checksum_sha256": "179392de506e2fa1e7b390fd795ccaaca85a02be88fc2e9e9c612d7ca5d97291",
+      "file_size_bytes": 29371527,
+      "date_range": [
+        "2026-01-09",
+        "2026-01-12"
+      ],
+      "selected_range": [
+        "2026-01-09T00:00:00+00:00",
+        "2026-01-13T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [],
+          "ETHUSDT": []
+        }
+      },
+      "rows_before": null,
+      "rows_after": 4701648,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p3.parquet",
+      "downloaded_at": "2026-09-20T02:11:49.362171+00:00",
+      "checksum_sha256": "8a679a39a27e7341569227f768228e520d71ccc23261ab4848e2c84716172623",
+      "file_size_bytes": 105806959,
+      "date_range": [
+        "2026-03-02",
+        "2026-03-06"
+      ],
+      "selected_range": [
+        "2026-03-02T00:00:00+00:00",
+        "2026-03-07T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [],
+          "ETHUSDT": []
+        }
+      },
+      "rows_before": null,
+      "rows_after": 17943958,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p4.parquet",
+      "downloaded_at": "2026-09-20T02:12:01.961680+00:00",
+      "checksum_sha256": "919816cbe040f128dc9ab96f5aea4baaa113ef50850c04115ccafa0ced9c75a9",
+      "file_size_bytes": 35707740,
+      "date_range": [
+        "2026-03-21",
+        "2026-03-23"
+      ],
+      "selected_range": [
+        "2026-03-21T00:00:00+00:00",
+        "2026-03-24T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [],
+          "ETHUSDT": []
+        }
+      },
+      "rows_before": null,
+      "rows_after": 5941759,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p5.parquet",
+      "downloaded_at": "2026-09-20T02:12:08.538346+00:00",
+      "checksum_sha256": "7a497b1ed27b5f591750e9f31b6cd4c8a00e8552d7b88525009081bd26458eaf",
+      "file_size_bytes": 16846386,
+      "date_range": [
+        "2026-04-27",
+        "2026-04-30"
+      ],
+      "selected_range": [
+        "2026-04-27T00:00:00+00:00",
+        "2026-05-01T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [
+            "2026-04-29",
+            "2026-04-30"
+          ],
+          "ETHUSDT": [
+            "2026-04-29",
+            "2026-04-30"
+          ]
+        }
+      },
+      "rows_before": null,
+      "rows_after": 2649957,
+      "market_count": null
+    },
+    {
+      "dataset": "binance-vision",
+      "original_file": "underlying_market_data.parquet",
+      "local_path": "research-data/processed/underlying_p5.parquet",
+      "downloaded_at": "2026-09-20T02:12:41.037972+00:00",
+      "checksum_sha256": "7468785fda0e25a420aa7eb4625218ee55bc19ca2850db4b145d8ffdaaf4406b",
+      "file_size_bytes": 33468961,
+      "date_range": [
+        "2026-04-27",
+        "2026-04-30"
+      ],
+      "selected_range": [
+        "2026-04-27T00:00:00+00:00",
+        "2026-05-01T00:00:00+00:00"
+      ],
+      "filters": {
+        "mode": "aggtrades-subsecond-window",
+        "window_source": "cli:start-days",
+        "coverage_gaps": {
+          "BTCUSDT": [],
+          "ETHUSDT": []
+        }
+      },
+      "rows_before": null,
+      "rows_after": 5437989,
+      "market_count": null
     }
   ],
   "notes": [
@@ -7103,9 +7294,10 @@
     "coinbase/deribit adapters prepared; no invented creds",
     "underlying aggTrades window is derived from polymarket_trades.parquet min/max ts; daily Binance Vision archives preferred, monthly only for daily gaps",
     "klines 1m are monthly regime/long-vol context only; replay alignment uses aggTrades",
-    "coverage gaps are recorded in manifest; no underlying ticks are invented"
+    "coverage gaps are recorded in manifest; no underlying ticks are invented",
+    "underlying builder reads every aggTrades archive overlapping the requested window, filters exact timestamps, and records missing symbol/day gaps without synthetic ticks"
   ],
-  "updated_at": "2026-09-20T00:47:05.423834+00:00",
+  "updated_at": "2026-09-20T02:12:41.037995+00:00",
   "external_source_coverage": "BINANCE_ONLY",
   "summary": {
     "finalized_at": "2026-09-19T19:23:53.161980+00:00",
@@ -7845,5 +8037,60 @@
     ],
     "daily_aggTrades_preferred": true,
     "monthly_aggTrades_fallback_only_for_daily_gaps": true
+  },
+  "underlying_coverage": {
+    "window_source": "cli:start-days",
+    "start_ts_ms": 1777248000000,
+    "end_ts_ms_exclusive": 1777593600000,
+    "start_utc": "2026-04-27T00:00:00+00:00",
+    "end_utc_exclusive": "2026-05-01T00:00:00+00:00",
+    "symbols": {
+      "BTCUSDT": {
+        "archives": [
+          "BTCUSDT-aggTrades-2026-04-27.zip",
+          "BTCUSDT-aggTrades-2026-04-28.zip",
+          "BTCUSDT-aggTrades-2026-04-29.zip",
+          "BTCUSDT-aggTrades-2026-04-30.zip"
+        ],
+        "requested_days": [
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30"
+        ],
+        "covered_days": [
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30"
+        ],
+        "gaps": [],
+        "rows": 2830800
+      },
+      "ETHUSDT": {
+        "archives": [
+          "ETHUSDT-aggTrades-2026-04-27.zip",
+          "ETHUSDT-aggTrades-2026-04-28.zip",
+          "ETHUSDT-aggTrades-2026-04-29.zip",
+          "ETHUSDT-aggTrades-2026-04-30.zip"
+        ],
+        "requested_days": [
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30"
+        ],
+        "covered_days": [
+          "2026-04-27",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-04-30"
+        ],
+        "gaps": [],
+        "rows": 2607189
+      }
+    },
+    "rows": 5437989,
+    "no_synthetic_ticks": true
   }
 }

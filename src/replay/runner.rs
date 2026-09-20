@@ -276,6 +276,11 @@ pub struct ReplayConfig {
     pub latency: LatencyProfile,
     /// Empirical Jev latency samples; honored only when `latency` is Empirical.
     pub latency_distribution: LatencyDistribution,
+    /// Pair namespace for multi-call runs (e.g. one condition per call in
+    /// run_corpus). `pair_id` becomes `{run_id}-{namespace}-{seq}` so pairs
+    /// never collide across calls; the caller owns namespace uniqueness
+    /// (run_corpus uses condition_id). Empty preserves single-call behavior.
+    pub pair_namespace: String,
     pub tick_size: TickSize,
     pub size: u64,
     pub max_pairs: usize,
@@ -294,6 +299,7 @@ impl ReplayConfig {
             fill: FillProfile::Conservative,
             latency: LatencyProfile::Base,
             latency_distribution: LatencyDistribution::default(),
+            pair_namespace: String::new(),
             tick_size: TickSize::from_f64(0.01),
             size: 10,
             max_pairs: 100,
@@ -598,7 +604,16 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             // so each has its own measured response time and staleness.
             // Both rows below share this pair ID because they use this same
             // frozen snapshot; only the existing QUANT enrichment differs.
-            let pair_id = format!("{}-{:06}", self.config.run_id, seq);
+            // The namespace (condition per corpus call) keeps pair IDs
+            // globally unique across calls; see ReplayConfig::pair_namespace.
+            let pair_id = if self.config.pair_namespace.is_empty() {
+                format!("{}-{:06}", self.config.run_id, seq)
+            } else {
+                format!(
+                    "{}-{}-{:06}",
+                    self.config.run_id, self.config.pair_namespace, seq
+                )
+            };
             for (variant, sig, lat, err, sh) in [
                 ("CONTROL", &sig_c, lat_c, err_c.as_ref(), &hash_c),
                 ("QUANT_V1", &sig_q, lat_q, err_q.as_ref(), &hash_q),
