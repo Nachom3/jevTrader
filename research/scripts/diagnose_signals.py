@@ -36,6 +36,8 @@ FEATURES = [
     "move_zscore_1s",
     "ofi_5s",
     "spread",
+    "poly_ofi_5s",
+    "perp_basis_pct",
 ]
 DRIFTS = ["drift_1s_pp", "drift_5s_pp", "drift_10s_pp", "drift_30s_pp", "drift_60s_pp"]
 
@@ -96,6 +98,8 @@ def features_of(rec):
             "move_zscore_1s": float(q.get("move_zscore_1s", 0.0)),
             "ofi_5s": float(u.get("ofi_5s", 0.0)),
             "spread": float(spread or 0.0),
+            "poly_ofi_5s": float(u.get("poly_ofi_5s", 0.0)),
+            "perp_basis_pct": float(u.get("perp_basis_pct", 0.0)),
         }
     except (KeyError, TypeError, ValueError):
         return {}
@@ -110,6 +114,9 @@ def main() -> None:
         "--probe",
         default="0x1539ce8dfb340c1fc8e473628e8b0380da5fa99fd60471e8a27596923484e91f",
     )
+    ap.add_argument("--ref", default="CONTROL")
+    ap.add_argument("--alt", default="MICRO_V2")
+    ap.add_argument("--experiment", default="diag", choices=["diag", "v2"])
     args = ap.parse_args()
 
     try:
@@ -125,7 +132,7 @@ def main() -> None:
             continue
         ans = answers_of(rec)
         feats = features_of(rec)
-        if len(ans) != 8 or len(feats) != 8:
+        if len(ans) != 8 or any(f not in feats for f in FEATURES):
             continue
         row = drift_of.get((rec["pair_id"], rec["variant"]), {})
         evals.append(
@@ -200,8 +207,13 @@ def main() -> None:
             cells.append(f"n={len(ds)} m={sum(ds) / len(ds):+.3f}" if ds else "n=0")
         lines.append(f"- {q}: " + " | ".join(cells))
     lines.append("")
-    # 5. QUANT-CONTROL paired deltas per question
-    lines.append("## QUANT-CONTROL paired deltas per question")
+    # 5. paired ref-vs-alt deltas per question. Diag mode keeps the legacy
+    # CONTROL/QUANT_V1 pair for reproducibility of the committed report;
+    # V2 mode compares --ref vs --alt (default CONTROL vs MICRO_V2).
+    ref, alt = (
+        (args.ref, args.alt) if args.experiment == "v2" else ("CONTROL", "QUANT_V1")
+    )
+    lines.append(f"## {alt}-{ref} paired deltas per question")
     lines.append(
         "| question | n_pairs | mean_abs_delta | P(abs>=0.10) | sign_agreement |"
     )
@@ -213,8 +225,8 @@ def main() -> None:
     for q in QUESTIONS:
         deltas = []
         for _, v in by_pair.items():
-            if "CONTROL" in v and "QUANT_V1" in v:
-                deltas.append(v["QUANT_V1"]["answers"][q] - v["CONTROL"]["answers"][q])
+            if ref in v and alt in v:
+                deltas.append(v[alt]["answers"][q] - v[ref]["answers"][q])
         mad = sum(abs(d) for d in deltas) / len(deltas) if deltas else 0.0
         big = [d for d in deltas if abs(d) >= 0.05]
         agree = (sum(1 for d in big if d > 0) / len(big)) if big else float("nan")
@@ -257,7 +269,7 @@ def main() -> None:
     lines.append("## Verdict vs pre-registered cutoffs")
     lines.append(f"- std<0.05 (flat): {flat}/8 questions")
     lines.append(f"- std>=0.10 (varies with state): {varied}/8 questions")
-    lines.append(f"- mean|QUANT-CONTROL|>=0.05: {q_big}/8 questions")
+    lines.append(f"- mean|{alt}-{ref}|>=0.05: {q_big}/8 questions")
     lines.append("- H1 (ignores state): supported iff flat>=6/8")
     lines.append("- H2 (state yes, quant no): varied>=4/8 AND q_big==0")
     lines.append(
@@ -266,6 +278,67 @@ def main() -> None:
     lines.append(
         "- H4 (reacts, no markout): H2/H3 signals AND |corr(answer,drift_5s)|<0.15 all"
     )
+    if args.experiment == "v2":
+        # V2 decisive test: underreact sensitivity + markout link.
+        uu = [e["answers"]["underreact_up"] for e in evals]
+        uu_by_var = {}
+        for e in evals:
+            uu_by_var.setdefault(e["variant"], []).append(e["answers"]["underreact_up"])
+        du = [e["answers"]["underreact_up"] for e in evals]
+        dr = [e["drift"].get("drift_5s_pp") for e in evals]
+        paired_ud = [
+            (a, d)
+            for a, d in zip(du, dr)
+            if d is not None and math.isfinite(a) and math.isfinite(d)
+        ]
+        corr_ud = (
+            pearson([a for a, _ in paired_ud], [d for _, d in paired_ud])
+            if len(paired_ud) >= 3
+            else float("nan")
+        )
+        srt = sorted(uu)
+        qs = [srt[int(len(srt) * p)] for p in (0.2, 0.4, 0.6, 0.8)]
+        bmeans = []
+        for b in range(5):
+            ds = [
+                d
+                for e in evals
+                for d in [e["drift"].get("drift_5s_pp")]
+                if d is not None
+                and sum(1 for t in qs if e["answers"]["underreact_up"] > t) == b
+            ]
+            bmeans.append(sum(ds) / len(ds) if ds else 0.0)
+        spread = max(bmeans) - min(bmeans) if bmeans else 0.0
+        lines.append("")
+        lines.append("## V2 verdict (pre-reg cutoffs)")
+        lines.append(
+            f"- std(underreact_up) overall: {statistics.pstdev(uu) if len(uu) > 1 else 0.0:.3f} "
+            "(SENSIBLE iff >= 0.10)"
+        )
+        for var, vals in sorted(uu_by_var.items()):
+            lines.append(
+                f"- std(underreact_up | {var}): "
+                f"{statistics.pstdev(vals) if len(vals) > 1 else 0.0:.3f} (n={len(vals)})"
+            )
+        corr_n = len(paired_ud)
+        corr_s = (
+            f"{corr_ud:+.2f} (n={corr_n})"
+            if not math.isnan(corr_ud)
+            else f"n/a (n={corr_n})"
+        )
+        lines.append(
+            "- corr(underreact_up, drift_5s): "
+            f"{corr_s}; PREDICTIVO iff |r|>=0.30, n>=50"
+        )
+        lines.append(
+            f"- monotonic spread (max-min bucket mean drift): {spread:.3f} "
+            "(PREDICTIVO iff >= 1.0pp)"
+        )
+        lines.append(
+            "- RAMA 1 (maker PnL): sensible + predictivo. "
+            "RAMA 2 (mueve, no predice): problema preguntas. "
+            "RAMA 3 (ni mueve): cuestionar diseno de preguntas."
+        )
     try:
         with open(args.out_md, "w") as f:
             f.write("\n".join(lines) + "\n")
