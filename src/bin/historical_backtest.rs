@@ -7,7 +7,7 @@
 
 use jevtrader::replay::SyntheticItem;
 use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regimes};
-use jevtrader::replay::types::{FillProfile, LatencyProfile};
+use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
     Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
     Split, StubJev, build_report, write_json, write_markdown,
@@ -40,7 +40,35 @@ fn parse_latency(s: &str) -> LatencyProfile {
     match s.to_ascii_uppercase().as_str() {
         "FAST" => LatencyProfile::Fast,
         "SLOW" => LatencyProfile::Slow,
+        "EMPIRICAL" => LatencyProfile::Empirical,
         _ => LatencyProfile::Base,
+    }
+}
+
+/// Loads a versioned latency distribution for Empirical replays.
+///
+/// Falls back to the built-in pilot placeholder when the file is absent or
+/// invalid, and says so loudly: replaying on the placeholder is documented,
+/// never silent.
+fn load_latency_distribution(path: &str) -> LatencyDistribution {
+    match fs::read_to_string(path) {
+        Ok(json) => match LatencyDistribution::from_json(&json) {
+            Ok(dist) => {
+                println!(
+                    "latency_distribution={path} samples={}",
+                    dist.samples_ms.len()
+                );
+                dist
+            }
+            Err(err) => {
+                println!("latency_distribution={path} INVALID ({err}); using pilot placeholder");
+                LatencyDistribution::default()
+            }
+        },
+        Err(_) => {
+            println!("latency_distribution={path} MISSING; using pilot placeholder [307,1019]ms");
+            LatencyDistribution::default()
+        }
     }
 }
 
@@ -345,6 +373,14 @@ fn main() {
     config.max_pairs = max_pairs.min(10_000);
     config.fill = fill;
     config.latency = latency;
+    if latency == LatencyProfile::Empirical {
+        let samples_path = parse_arg(
+            &args,
+            "--latency-samples",
+            "research-data/reports/jev_latency_samples.json",
+        );
+        config.latency_distribution = load_latency_distribution(&samples_path);
+    }
 
     let corpus = parse_arg(&args, "--corpus", "research-data/processed");
     let real_jev = parse_arg(&args, "--real-jev", "0") == "1";
@@ -359,15 +395,35 @@ fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1500);
-        let evaluator =
-            RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
-                .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
+        let evaluator = RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
+            .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
         let mut runner = ReplayRunner::new(config.clone(), evaluator);
         let output = execute(&mut runner, &corpus, &config);
         println!(
             "jev_live_calls={} budget={}",
             runner.evaluator.calls, max_jev_calls
         );
+        // Persist measured live latencies as the empirical distribution for
+        // future replays. Disabled by default; pass --latency-out to enable.
+        let latency_out = parse_arg(&args, "--latency-out", "");
+        if !latency_out.is_empty() {
+            match LatencyDistribution::from_samples(runner.evaluator.latencies_ms.clone(), 42) {
+                Ok(dist) => match serde_json::to_string_pretty(&dist) {
+                    Ok(json) => {
+                        if fs::write(&latency_out, &json).is_ok() {
+                            println!(
+                                "latency_observed samples={} -> {latency_out}",
+                                dist.samples_ms.len()
+                            );
+                        } else {
+                            println!("latency_observed WRITE FAILED {latency_out}");
+                        }
+                    }
+                    Err(err) => println!("latency_observed SERIALIZE FAILED: {err}"),
+                },
+                Err(err) => println!("latency_observed NO SAMPLES ({err})"),
+            }
+        }
         output
     } else {
         let mut runner = ReplayRunner::new(config.clone(), StubJev::new(42));
@@ -424,7 +480,9 @@ fn main() {
         out
     );
     if real_jev {
-        println!("NOTE: LIVE Jev judgments (budget-capped); tiny-n pilot, not alpha evidence. OOS untouched for tuning.");
+        println!(
+            "NOTE: LIVE Jev judgments (budget-capped); tiny-n pilot, not alpha evidence. OOS untouched for tuning."
+        );
     } else {
         println!("NOTE: stub-Jev smoke only; not alpha evidence. OOS untouched for tuning.");
     }

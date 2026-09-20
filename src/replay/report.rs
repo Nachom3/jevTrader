@@ -18,6 +18,9 @@ pub struct ReportRow {
     pub fidelity: String,
     pub fill_model: String,
     pub latency_profile: String,
+    /// Latency used for this evaluation, measured live or sampled for replay.
+    #[serde(default)]
+    pub jev_latency_ms: u64,
     pub quoted: bool,
     pub filled: bool,
     pub fill_fraction: f64,
@@ -53,6 +56,7 @@ pub struct SegmentSummary {
     pub fills: usize,
     pub fill_rate: f64,
     pub mean_markout_5s_pp: f64,
+    pub mean_jev_latency_ms: f64,
     pub hit_rate_5s: f64,
     pub total_pnl_pp: f64,
     pub pnl_per_trade: f64,
@@ -88,6 +92,8 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
             } else {
                 mo5.iter().sum::<f64>() / mo5.len() as f64
             };
+            let mean_jev_latency =
+                rs.iter().map(|r| r.jev_latency_ms as f64).sum::<f64>() / evaluations as f64;
             let hit = if mo5.is_empty() {
                 0.0
             } else {
@@ -107,6 +113,7 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
                     0.0
                 },
                 mean_markout_5s_pp: mean_mo5,
+                mean_jev_latency_ms: mean_jev_latency,
                 hit_rate_5s: hit,
                 total_pnl_pp: total_pnl,
                 pnl_per_trade: if fills > 0 {
@@ -130,11 +137,11 @@ pub fn write_json(rows: &[ReportRow]) -> Result<String, String> {
 #[must_use]
 pub fn write_markdown(summary: &[SegmentSummary]) -> String {
     let mut out = String::from("# Historical replay report\n\n");
-    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_mo5s | pnl | stale | incomplete |\n");
-    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_jev_latency_ms | mean_mo5s | pnl | stale | incomplete |\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for s in summary {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.4} | {:.4} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.4} | {} | {} |\n",
             s.key.variant,
             s.key.asset,
             s.key.horizon,
@@ -146,6 +153,7 @@ pub fn write_markdown(summary: &[SegmentSummary]) -> String {
             s.evaluations,
             s.quotes,
             s.fills,
+            s.mean_jev_latency_ms,
             s.mean_markout_5s_pp,
             s.total_pnl_pp,
             s.stale_skips,
@@ -196,6 +204,7 @@ mod tests {
             fidelity: "EXACT".to_owned(),
             fill_model: "CONSERVATIVE".to_owned(),
             latency_profile: "BASE".to_owned(),
+            jev_latency_ms: 320,
             quoted: true,
             filled: true,
             fill_fraction: 1.0,
@@ -240,5 +249,6 @@ mod tests {
         let rep = build_report(&rows);
         let md = write_markdown(&rep);
         assert!(md.contains("CONTROL") && md.contains("mean_mo5s"));
+        assert!(md.contains("mean_jev_latency_ms"));
     }
 }

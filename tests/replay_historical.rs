@@ -448,3 +448,71 @@ fn manifest_reproducibility_and_incomplete_data() {
     // decide() is exercised via the runner path; reaching here proves
     // incomplete snapshots never panic.
 }
+
+#[test]
+fn empirical_latency_uses_sampled_distribution_deterministically() {
+    let items = [
+        (
+            1000,
+            0.40,
+            0.45,
+            100.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+        (
+            6000,
+            0.41,
+            0.46,
+            101.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+        (
+            11000,
+            0.42,
+            0.47,
+            102.0,
+            "BTC-5m".to_owned(),
+            "BTC".to_owned(),
+            "5m".to_owned(),
+            Split::Exploration,
+            Fidelity::Exact,
+            "NORMAL_VOL-SIDEWAYS".to_owned(),
+        ),
+    ];
+    let run_once = || {
+        let mut cfg = ReplayConfig::smoke("empirical-lat");
+        cfg.latency = LatencyProfile::Empirical;
+        cfg.max_pairs = 3;
+        let mut runner = ReplayRunner::new(cfg, StubJev::new(42));
+        runner.run_synthetic(&items, 1_000_000)
+    };
+    let first = run_once();
+    let second = run_once();
+    assert_eq!(first.rows.len(), 6);
+    assert!(
+        first
+            .rows
+            .iter()
+            .all(|row| row.latency_profile == "EMPIRICAL")
+    );
+    // Default distribution is the pilot placeholder bounds only.
+    assert!(
+        first
+            .rows
+            .iter()
+            .all(|row| row.jev_latency_ms == 307 || row.jev_latency_ms == 1019)
+    );
+    let lat_first: Vec<u64> = first.rows.iter().map(|row| row.jev_latency_ms).collect();
+    let lat_second: Vec<u64> = second.rows.iter().map(|row| row.jev_latency_ms).collect();
+    assert_eq!(lat_first, lat_second);
+}

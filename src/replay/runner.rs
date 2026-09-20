@@ -5,7 +5,9 @@ use super::fills::{ExecutionLatency, FillSimulator, RestingOrder};
 use super::jev_cache::{CachedJev, JevCache, JevCacheKey};
 use super::markouts::signed_markouts_pp;
 use super::report::ReportRow;
-use super::types::{Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyProfile, Split};
+use super::types::{
+    Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyDistribution, LatencyProfile, Split,
+};
 use crate::config::{QuantConfig, QuoteThresholds};
 use crate::domain::{PriceTicks, TickSize};
 use crate::engine::MarketSnapshot;
@@ -13,7 +15,6 @@ use crate::engine::pipeline::{DecisionInput, MarkoutTracker, candidate_maker_pri
 use crate::engine::signal_actor::StalenessPolicy;
 use crate::jev::request::{V1Questions, V1State};
 use crate::jev::response::{TickDistribution, V1Signal};
-use std::time::Duration;
 use crate::polymarket::OrderBook;
 use crate::state::feature_builder::{
     ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
@@ -23,6 +24,7 @@ use crate::state::poly_history::PolyHistory;
 use crate::state::quant_features::build_quant;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Duration;
 
 /// One Jev evaluation: the judged signal plus how it was obtained.
 ///
@@ -110,22 +112,22 @@ impl JevEvaluator for StubJev {
         JevOutcome {
             signal: V1Signal {
                 yes_pressure_5s: clamp(0.3 + base * 0.5),
-            no_pressure_5s: clamp(0.5 - base * 0.4),
-            move_persists: clamp(0.4 + base * 0.4),
-            underreact_up: clamp(0.5 + base * 0.45),
-            underreact_down: clamp(0.35 - base * 0.2),
-            repricing: TickDistribution {
-                up_3_plus: 0.05 + base * 0.1,
-                up_2: 0.10 + base * 0.1,
-                up_1: 0.20 + base * 0.2,
-                flat: 0.25,
-                down_1: 0.15,
-                down_2: 0.05,
-                down_3_plus: 0.05,
-            },
-            repricing_confidence: 0.6,
-            fill_before_decay: clamp(0.5 + base * 0.3),
-            fill_toxic: clamp(0.35 - base * 0.2),
+                no_pressure_5s: clamp(0.5 - base * 0.4),
+                move_persists: clamp(0.4 + base * 0.4),
+                underreact_up: clamp(0.5 + base * 0.45),
+                underreact_down: clamp(0.35 - base * 0.2),
+                repricing: TickDistribution {
+                    up_3_plus: 0.05 + base * 0.1,
+                    up_2: 0.10 + base * 0.1,
+                    up_1: 0.20 + base * 0.2,
+                    flat: 0.25,
+                    down_1: 0.15,
+                    down_2: 0.05,
+                    down_3_plus: 0.05,
+                },
+                repricing_confidence: 0.6,
+                fill_before_decay: clamp(0.5 + base * 0.3),
+                fill_toxic: clamp(0.35 - base * 0.2),
             },
             latency_ms: assumed_latency_ms,
             live: false,
@@ -145,6 +147,9 @@ pub struct RealJev {
     runtime: tokio::runtime::Runtime,
     pub calls: u64,
     pub max_calls: u64,
+    /// Measured live latencies in ms, one per successful call, in order.
+    /// The large run persists these as the empirical latency distribution.
+    pub latencies_ms: Vec<u64>,
 }
 
 impl RealJev {
@@ -156,14 +161,14 @@ impl RealJev {
         if max_calls == 0 {
             return Err("max_calls must be greater than zero".to_owned());
         }
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
         Ok(Self {
             api_key,
             deadline,
             runtime,
             calls: 0,
             max_calls,
+            latencies_ms: Vec::new(),
         })
     }
 }
@@ -214,6 +219,7 @@ impl JevEvaluator for RealJev {
                         s.fill_toxic,
                     );
                 }
+                self.latencies_ms.push(evaluation.latency_ms);
                 JevOutcome {
                     latency_ms: evaluation.latency_ms,
                     signal: evaluation.signal,
@@ -268,6 +274,8 @@ pub struct ReplayConfig {
     pub quant: QuantConfig,
     pub fill: FillProfile,
     pub latency: LatencyProfile,
+    /// Empirical Jev latency samples; honored only when `latency` is Empirical.
+    pub latency_distribution: LatencyDistribution,
     pub tick_size: TickSize,
     pub size: u64,
     pub max_pairs: usize,
@@ -285,6 +293,7 @@ impl ReplayConfig {
             quant: QuantConfig::default(),
             fill: FillProfile::Conservative,
             latency: LatencyProfile::Base,
+            latency_distribution: LatencyDistribution::default(),
             tick_size: TickSize::from_f64(0.01),
             size: 10,
             max_pairs: 100,
@@ -430,11 +439,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         assumed_latency_ms: u64,
     ) -> (V1Signal, u64, Option<String>) {
         if let Some(cached) = self.cache.get(key) {
-            return (
-                signal_from_cache(&cached),
-                cached.latency_ms,
-                None,
-            );
+            return (signal_from_cache(&cached), cached.latency_ms, None);
         }
         let outcome = self.evaluator.evaluate(
             state,
@@ -562,17 +567,23 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 .get(market_id)
                 .cloned()
                 .unwrap_or((synthetic_question(market_id), SYNTHETIC_RULES.to_owned()));
-            let (sig_c, lat_c, err_c, hash_c, sig_q, lat_q, err_q, hash_q) =
-                self.evaluate_pair(
-                    &features,
-                    &poly,
-                    candidate,
-                    &question,
-                    &rules,
-                    market_id,
-                    seq as u64,
-                    jev_latency,
-                );
+            let assumed_latency_ms = match self.config.latency {
+                // Empirical replays sample the observed distribution per
+                // evaluation (deterministic in seq); fixed profiles keep
+                // their single reference value.
+                LatencyProfile::Empirical => self.config.latency_distribution.sample_ms(seq as u64),
+                _ => jev_latency,
+            };
+            let (sig_c, lat_c, err_c, hash_c, sig_q, lat_q, err_q, hash_q) = self.evaluate_pair(
+                &features,
+                &poly,
+                candidate,
+                &question,
+                &rules,
+                market_id,
+                seq as u64,
+                assumed_latency_ms,
+            );
             jev_errors += err_c.is_some() as usize + err_q.is_some() as usize;
             // Latency: the response is usable at ts+jev_latency while the
             // market keeps printing. Two staleness gates, both in event
@@ -688,11 +699,8 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                         FillProfile::Base => "BASE".to_owned(),
                         FillProfile::Conservative => "CONSERVATIVE".to_owned(),
                     },
-                    latency_profile: match self.config.latency {
-                        LatencyProfile::Fast => "FAST".to_owned(),
-                        LatencyProfile::Base => "BASE".to_owned(),
-                        LatencyProfile::Slow => "SLOW".to_owned(),
-                    },
+                    latency_profile: self.config.latency.as_str().to_owned(),
+                    jev_latency_ms: lat,
                     quoted,
                     filled: fill.filled,
                     fill_fraction: fill.fill_fraction,
@@ -910,9 +918,8 @@ fn poly_from_book(
     use crate::strategy::lead_lag::PolySnapshot;
     let best_bid = book.best_bid()?;
     let best_ask = book.best_ask()?;
-    let coherent = PriceTicks::from_f64(
-        ((best_bid.to_f64() + best_ask.to_f64()) / 2.0).clamp(0.0, 1.0),
-    );
+    let coherent =
+        PriceTicks::from_f64(((best_bid.to_f64() + best_ask.to_f64()) / 2.0).clamp(0.0, 1.0));
     hist.push(ts_ms.max(0) as u64, coherent);
     let bid_depth: f64 = book.bids().iter().map(|(_, q)| *q as f64).sum();
     let ask_depth: f64 = book.asks().iter().map(|(_, q)| *q as f64).sum();

@@ -37,6 +37,7 @@ pub use runner::{
 pub use source::{ChunkEventSource, HistoricalSource, InMemorySource};
 pub use synchronizer::{SynchronizedEvent, Synchronizer, as_of_backward};
 pub use types::{
-    Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyProfile, Regime, ResolutionSpec, Split,
+    Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyDistribution, LatencyProfile, Regime,
+    ResolutionSpec, Split,
 };
 pub use walkforward::{WalkforwardRunner, WalkforwardWindow};

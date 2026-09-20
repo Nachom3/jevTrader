@@ -65,9 +65,32 @@ jev_model: "jev-latest"
 # Replay defaults
 replay:
   chunk_rows: 50000
+  # Empirical Jev latency is selected with LatencyProfile::Empirical. The
+  # versioned file is loaded by LatencyDistribution::from_json; the pilot
+  # bounds below are only a placeholder until the large run writes samples.
+  # JSON format (pilot bounds, not fabricated intermediate observations):
+  # {"version":1,"samples_ms":[307,1019],"seed":42}
+  latency_distribution:
+    samples_file: "research-data/reports/jev_latency_samples.json"
+    version: 1
+    seed: 42
+    observed_range_ms: [307, 1019]
+    derived_profiles:
+      P50: {percentile: 0.50, value_ms: null, status: "computed from samples"}
+      P90: {percentile: 0.90, value_ms: null, status: "computed from samples"}
+      P99: {percentile: 0.99, value_ms: null, status: "computed from samples"}
   latency_profiles:
-    FAST: {jev_ms: 100, submit_ms: 10, cancel_ms: 10}
-    BASE: {jev_ms: 320, submit_ms: 50, cancel_ms: 50}
-    SLOW: {jev_ms: 800, submit_ms: 150, cancel_ms: 150}
+    # FAST/BASE/SLOW remain sensitivity labels. BASE-320 is an optimistic
+    # fixed reference, not the default evidence latency.
+    FAST: {jev_ms: 100, submit_ms: 10, cancel_ms: 10, source: empirical_p50}
+    BASE:
+      jev_ms: 320
+      submit_ms: 50
+      cancel_ms: 50
+      source: fixed_reference_optimistic
+    SLOW: {jev_ms: 800, submit_ms: 150, cancel_ms: 150, source: empirical_p99}
+    EMPIRICAL:
+      samples_file: "research-data/reports/jev_latency_samples.json"
+      source: observed
   fill_models: [OPTIMISTIC, BASE, CONSERVATIVE]
   markout_horizons_s: [1, 5, 10, 30, 60]
