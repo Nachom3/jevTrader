@@ -585,6 +585,9 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             // fill queue proxy are the guards for that gap.
             // Per-variant latency: live CONTROL/QUANT calls are sequential,
             // so each has its own measured response time and staleness.
+            // Both rows below share this pair ID because they use this same
+            // frozen snapshot; only the existing QUANT enrichment differs.
+            let pair_id = format!("{}-{:06}", self.config.run_id, seq);
             for (variant, sig, lat, err, sh) in [
                 ("CONTROL", &sig_c, lat_c, err_c.as_ref(), &hash_c),
                 ("QUANT_V1", &sig_q, lat_q, err_q.as_ref(), &hash_q),
@@ -665,7 +668,6 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 } else {
                     0.0
                 };
-                let pair_id = format!("{}-{:06}", self.config.run_id, seq);
                 rows.push(ReportRow {
                     run_id: self.config.run_id.clone(),
                     pair_id: pair_id.clone(),
@@ -701,7 +703,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     markout_60s_pp: mo[4],
                     pnl_pp: pnl,
                     stale_skipped: stale,
-                    incomplete_pair: !quoted && !stale,
+                    incomplete_pair: err.is_some(),
                 });
             }
         }

@@ -12,6 +12,7 @@ use jevtrader::domain::{PriceTicks, TickSize};
 use jevtrader::engine::MarketSnapshot;
 use jevtrader::engine::pipeline::{MarkoutTracker, candidate_maker_price};
 use jevtrader::engine::signal_actor::StalenessPolicy;
+use jevtrader::jev::response::{TickDistribution, V1Signal};
 use jevtrader::polymarket::OrderBook;
 use jevtrader::replay::fills::{ExecutionLatency, RestingOrder};
 use jevtrader::replay::markouts::signed_markouts_pp;
@@ -20,8 +21,8 @@ use jevtrader::replay::report::write_markdown;
 use jevtrader::replay::walkforward::WalkforwardWindow;
 use jevtrader::replay::{
     Fidelity, FillProfile, FillSimulator, HistoricalEvent, HistoricalSource, InMemorySource,
-    LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split, StubJev, Synchronizer,
-    as_of_backward, build_report,
+    JevEvaluator, JevOutcome, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split,
+    StubJev, Synchronizer, as_of_backward, build_report,
 };
 use jevtrader::state::feature_builder::{
     ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
@@ -43,6 +44,48 @@ fn snapshot(bid: f64, ask: f64) -> MarketSnapshot {
     MarketSnapshot {
         book: book_at(bid, ask),
         stale: false,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FixedReplayJev {
+    error: bool,
+}
+
+impl JevEvaluator for FixedReplayJev {
+    fn evaluate(
+        &mut self,
+        _state: &jevtrader::jev::request::V1State,
+        _market_id: &str,
+        _state_seq: u64,
+        _questions_hash: &str,
+        _variant: &str,
+        assumed_latency_ms: u64,
+    ) -> jevtrader::replay::JevOutcome {
+        JevOutcome {
+            signal: V1Signal {
+                yes_pressure_5s: 0.5,
+                no_pressure_5s: 0.5,
+                move_persists: 0.5,
+                underreact_up: 0.5,
+                underreact_down: 0.5,
+                repricing: TickDistribution {
+                    up_3_plus: 0.1,
+                    up_2: 0.1,
+                    up_1: 0.1,
+                    flat: 0.4,
+                    down_1: 0.1,
+                    down_2: 0.1,
+                    down_3_plus: 0.1,
+                },
+                repricing_confidence: 0.0,
+                fill_before_decay: 0.5,
+                fill_toxic: 0.5,
+            },
+            latency_ms: assumed_latency_ms,
+            live: false,
+            error: self.error.then(|| "synthetic Jev failure".to_owned()),
+        }
     }
 }
 
@@ -187,6 +230,49 @@ fn control_quant_share_everything_but_quant() {
         assert!(w.iter().any(|r| r.variant == "QUANT_V1"));
         assert_ne!(w[0].state_hash, w[1].state_hash);
     }
+}
+
+#[test]
+fn healthy_skips_are_complete_but_jev_errors_are_incomplete() {
+    let item = (
+        1000,
+        0.40,
+        0.45,
+        100.0,
+        "BTC-5m".to_owned(),
+        "BTC".to_owned(),
+        "5m".to_owned(),
+        Split::Exploration,
+        Fidelity::Exact,
+        "NORMAL_VOL-SIDEWAYS".to_owned(),
+    );
+
+    let mut healthy = ReplayRunner::new(
+        ReplayConfig::smoke("healthy-skip"),
+        FixedReplayJev { error: false },
+    );
+    let healthy_output = healthy.run_synthetic(std::slice::from_ref(&item), 1_000_000);
+    assert_eq!(healthy_output.rows.len(), 2);
+    assert!(healthy_output.rows.iter().all(|row| !row.quoted));
+    assert!(healthy_output.rows.iter().all(|row| !row.incomplete_pair));
+    assert_eq!(healthy_output.incomplete_pairs, 0);
+    let summaries = build_report(&healthy_output.rows);
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| summary.incomplete_pairs == 0)
+    );
+
+    let mut failing = ReplayRunner::new(
+        ReplayConfig::smoke("jev-error"),
+        FixedReplayJev { error: true },
+    );
+    let failing_output = failing.run_synthetic(&[item], 1_000_000);
+    assert_eq!(failing_output.rows.len(), 2);
+    assert!(failing_output.rows.iter().all(|row| row.incomplete_pair));
+    assert_eq!(failing_output.jev_errors, 2);
+    // RunnerOutput.incomplete_pairs is reserved for pairs with no rows.
+    assert_eq!(failing_output.incomplete_pairs, 0);
 }
 
 #[test]
