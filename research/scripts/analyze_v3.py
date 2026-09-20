@@ -35,7 +35,7 @@ def pearson(xs, ys):
         if n < 3:
             return float("nan")
         mx, my = sum(xs) / n, sum(ys) / n
-        cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
         vx = sum((x - mx) ** 2 for x in xs)
         vy = sum((y - my) ** 2 for y in ys)
         if vx <= 0 or vy <= 0:
@@ -43,6 +43,23 @@ def pearson(xs, ys):
         return cov / math.sqrt(vx * vy)
     except (ValueError, OverflowError):
         return float("nan")
+
+
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def quintiles(vals):
+    try:
+        if not vals:
+            return []
+        ordered = sorted(vals)
+        return [ordered[int(len(ordered) * p)] for p in (0.2, 0.4, 0.6, 0.8)]
+    except (TypeError, ValueError, IndexError):
+        return []
 
 
 def main() -> None:
@@ -53,7 +70,8 @@ def main() -> None:
     ap.add_argument("--drift-overlay", default="")
     args = ap.parse_args()
     try:
-        rows = json.load(open(args.rows))
+        with open(args.rows) as f:
+            rows = json.load(f)
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"rows read failed: {exc}") from exc
     overlay = {}
@@ -61,16 +79,18 @@ def main() -> None:
         # Dense-label drift recomputation (see fix_strided_drift.py): wins
         # over the frozen rows' strided labels wherever present.
         try:
-            overlay = json.load(open(args.drift_overlay)).get("drift", {})
+            with open(args.drift_overlay) as f:
+                overlay = json.load(f).get("drift", {})
             print(f"drift_overlay entries={len(overlay)}")
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"overlay read failed: {exc}") from exc
     states = {}
     if args.signals:
         try:
-            for rec in json.load(open(args.signals)):
-                if rec.get("variant") == "CONTROL":
-                    states[rec["pair_id"]] = json.loads(rec["state_json"])
+            with open(args.signals) as f:
+                for rec in json.load(f):
+                    if rec.get("variant") == "CONTROL":
+                        states[rec["pair_id"]] = json.loads(rec["state_json"])
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"signals read failed: {exc}") from exc
 
@@ -86,9 +106,9 @@ def main() -> None:
             feats = {}
             for f in FEATS:
                 if f == "move_zscore_1s":
-                    feats[f] = float((st.get("quant") or {}).get(f, 0.0))
+                    feats[f] = safe_float((st.get("quant") or {}).get(f, 0.0))
                 else:
-                    feats[f] = float(u.get(f, 0.0))
+                    feats[f] = safe_float(u.get(f, 0.0))
             fair.append(
                 {
                     "pair": r["pair_id"],
@@ -107,9 +127,9 @@ def main() -> None:
             feats = {}
             for f in FEATS:
                 if f == "move_zscore_1s":
-                    feats[f] = float((st.get("quant") or {}).get(f, 0.0))
+                    feats[f] = safe_float((st.get("quant") or {}).get(f, 0.0))
                 else:
-                    feats[f] = float(u.get(f, 0.0))
+                    feats[f] = safe_float(u.get(f, 0.0))
             pres.append(
                 {
                     "pair": r["pair_id"],
@@ -193,15 +213,13 @@ def main() -> None:
     lines.append("")
     # 4. prediction: quintile buckets + user pressure bins vs drift horizons
     lines.append("## Prediction: signal buckets vs future drift")
-    for label, vals, key in [
-        ("fair_p_yes", sorted(e["fair"] for e in fair), "fair"),
-        ("pressure", sorted(e["pressure"] for e in pres), "pressure"),
-    ]:
+    for label, key in [("fair_p_yes", "fair"), ("pressure", "pressure")]:
         src = fair if key == "fair" else pres
+        vals = sorted(e[key] for e in src)
         if not vals:
             lines.append(f"- {label}: n=0")
             continue
-        qs = [vals[int(len(vals) * p)] for p in (0.2, 0.4, 0.6, 0.8)]
+        qs = quintiles(vals)
         for h in ["1s", "5s", "30s"]:
             cells = []
             for b in range(5):
@@ -218,7 +236,7 @@ def main() -> None:
         c = (
             pearson([a for a, _ in alld], [d for _, d in alld])
             if len(alld) >= 3
-            else float("nan")
+            else math.nan
         )
         lines.append(
             f"- corr({label}, drift_5s) = "
