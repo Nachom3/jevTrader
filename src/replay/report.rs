@@ -44,6 +44,16 @@ pub struct ReportRow {
     pub drift_30s_pp: Option<f64>,
     #[serde(default)]
     pub drift_60s_pp: Option<f64>,
+    /// V3 arm metrics (None on other arms and on branch failures).
+    /// `fair_p_yes` is the calibrated fair P(YES); edge = fair - market is
+    /// computed in analysis, never in Jev. `pressure` is the expected
+    /// bipolar value in [-1, 1] with its distribution confidence.
+    #[serde(default)]
+    pub fair_p_yes: Option<f64>,
+    #[serde(default)]
+    pub pressure: Option<f64>,
+    #[serde(default)]
+    pub pressure_confidence: Option<f64>,
     pub pnl_pp: f64,
     pub stale_skipped: bool,
     pub incomplete_pair: bool,
@@ -79,6 +89,9 @@ pub struct SegmentSummary {
     pub hit_rate_drift_5s: f64,
     /// Non-null drift +5s observations (denominator of the drift stats).
     pub n_drift_5s: usize,
+    /// V3 arm metrics: means over non-null observations (0.0 when empty).
+    pub mean_fair_p_yes: f64,
+    pub mean_pressure: f64,
     pub total_pnl_pp: f64,
     pub pnl_per_trade: f64,
     pub stale_skips: usize,
@@ -132,6 +145,15 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
                 drift5.iter().filter(|v| **v > 0.0).count() as f64 / drift5.len() as f64
             };
             let total_pnl: f64 = rs.iter().map(|r| r.pnl_pp).sum();
+            let mean_of = |xs: Vec<f64>| {
+                if xs.is_empty() {
+                    0.0
+                } else {
+                    xs.iter().sum::<f64>() / xs.len() as f64
+                }
+            };
+            let mean_fair = mean_of(rs.iter().filter_map(|r| r.fair_p_yes).collect());
+            let mean_pressure = mean_of(rs.iter().filter_map(|r| r.pressure).collect());
             let stale_skips = rs.iter().filter(|r| r.stale_skipped).count();
             let incomplete_pairs = rs.iter().filter(|r| r.incomplete_pair).count();
             SegmentSummary {
@@ -150,6 +172,8 @@ pub fn build_report(rows: &[ReportRow]) -> Vec<SegmentSummary> {
                 mean_drift_5s_pp: mean_drift5,
                 hit_rate_drift_5s: hit_drift,
                 n_drift_5s: drift5.len(),
+                mean_fair_p_yes: mean_fair,
+                mean_pressure,
                 total_pnl_pp: total_pnl,
                 pnl_per_trade: if fills > 0 {
                     total_pnl / fills as f64
@@ -172,13 +196,13 @@ pub fn write_json(rows: &[ReportRow]) -> Result<String, String> {
 #[must_use]
 pub fn write_markdown(summary: &[SegmentSummary]) -> String {
     let mut out = String::from("# Historical replay report\n\n");
-    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_lat_ms | mean_mo5s | hit_mo5s | n_drift5s | mean_drift5s | hit_drift5s | pnl | stale | incomplete |\n");
+    out.push_str("| variant | asset | horizon | regime | split | fidelity | fill | latency | evals | quotes | fills | mean_lat_ms | mean_mo5s | hit_mo5s | n_drift5s | mean_drift5s | hit_drift5s | mean_fair | mean_pressure | pnl | stale | incomplete |\n");
     out.push_str(
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     for s in summary {
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.3} | {} | {:.4} | {:.3} | {:.4} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {:.4} | {:.3} | {} | {:.4} | {:.3} | {:.3} | {:+.3} | {:.4} | {} | {} |\n",
             s.key.variant,
             s.key.asset,
             s.key.horizon,
@@ -196,6 +220,8 @@ pub fn write_markdown(summary: &[SegmentSummary]) -> String {
             s.n_drift_5s,
             s.mean_drift_5s_pp,
             s.hit_rate_drift_5s,
+            s.mean_fair_p_yes,
+            s.mean_pressure,
             s.total_pnl_pp,
             s.stale_skips,
             s.incomplete_pairs
@@ -259,6 +285,9 @@ mod tests {
             drift_10s_pp: None,
             drift_30s_pp: None,
             drift_60s_pp: None,
+            fair_p_yes: None,
+            pressure: None,
+            pressure_confidence: None,
             pnl_pp: pnl,
             stale_skipped: false,
             incomplete_pair: false,

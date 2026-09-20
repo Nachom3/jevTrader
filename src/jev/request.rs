@@ -284,20 +284,118 @@ pub fn v1_questions(candidate_buy_price: PriceTicks) -> V1Questions {
     V1Questions::new(candidate_buy_price)
 }
 
+/// Which question set an arm evaluates. V1 is the frozen eight-question
+/// document; FairValue and PressureComposite are single-question V3 sets
+/// that share the same MICRO state across arms (question-form experiment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionSet {
+    V1,
+    FairValue,
+    PressureComposite,
+}
+
+/// Noul instructions for the FAIR_VALUE arm: atomic resolution proposition,
+/// no threshold comparison inside the judgment. The 0-1 answer IS the fair
+/// estimate; edge = fair - market is computed in Rust, never in Jev.
+pub const FAIR_VALUE_INSTRUCTIONS: &str = "Considering all information in `market`, `underlying` and `polymarket`, will this market resolve to YES? Do not compare against any threshold and do not decide whether to trade.";
+
+/// Choice instructions for the PRESSURE arm: one bipolar dimension.
+pub const PRESSURE_INSTRUCTIONS: &str = "What directional pressure do `underlying` and `polymarket` imply for the YES price over the next 5 seconds?";
+
+/// The five ordered pressure levels, from strong selling to strong buying.
+/// Values in code: -1.0, -0.5, 0.0, +0.5, +1.0 (expected value in Rust).
+#[derive(Debug, Clone, Serialize)]
+pub struct PressureCriteria {
+    #[serde(rename = "STRONG_DOWN")]
+    pub strong_down: String,
+    #[serde(rename = "MILD_DOWN")]
+    pub mild_down: String,
+    #[serde(rename = "NEUTRAL")]
+    pub neutral: String,
+    #[serde(rename = "MILD_UP")]
+    pub mild_up: String,
+    #[serde(rename = "STRONG_UP")]
+    pub strong_up: String,
+}
+
+impl Default for PressureCriteria {
+    fn default() -> Self {
+        Self {
+            strong_down: "Aggressive selling dominates both the external leg and the Polymarket tape; the YES price is being pushed down hard.".to_owned(),
+            mild_down: "Selling has a modest edge in recent external and tape flow; mild downward tilt on YES.".to_owned(),
+            neutral: "Buying and selling are balanced across external flow and the tape; no discernible directional pressure on YES.".to_owned(),
+            mild_up: "Buying has a modest edge in recent external and tape flow; mild upward tilt on YES.".to_owned(),
+            strong_up: "Aggressive buying dominates both the external leg and the Polymarket tape; the YES price is being pushed up hard.".to_owned(),
+        }
+    }
+}
+
+/// One-question FAIR_VALUE set: `{fair_p_yes: {type: noul, ...}}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FairValueQuestions {
+    pub fair_p_yes: NoulQuestion,
+}
+
+/// One-question PRESSURE set: `{pressure_5s: {type: choice, ...}}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PressureQuestions {
+    pub pressure_5s: PressureChoiceQuestion,
+}
+
+/// Choice question with pressure criteria (V1's ChoiceQuestion carries the
+/// fixed 7-bucket repricing criteria and cannot be reused here).
+#[derive(Debug, Clone, Serialize)]
+pub struct PressureChoiceQuestion {
+    #[serde(rename = "type")]
+    kind: ChoiceType,
+    pub instructions: String,
+    pub criteria: PressureCriteria,
+}
+
+impl QuestionSet {
+    /// Builds the wire-shape questions for one arm. V1 keeps candidate
+    /// substitution; V3 sets are candidate-independent (no fill framing).
+    #[must_use]
+    pub fn build(&self, candidate_buy_price: PriceTicks) -> serde_json::Value {
+        match self {
+            Self::V1 => serde_json::to_value(V1Questions::new(candidate_buy_price))
+                .unwrap_or(serde_json::Value::Null),
+            Self::FairValue => serde_json::to_value(FairValueQuestions {
+                fair_p_yes: NoulQuestion::new(FAIR_VALUE_INSTRUCTIONS),
+            })
+            .unwrap_or(serde_json::Value::Null),
+            Self::PressureComposite => serde_json::to_value(PressureQuestions {
+                pressure_5s: PressureChoiceQuestion {
+                    kind: ChoiceType::Choice,
+                    instructions: PRESSURE_INSTRUCTIONS.to_owned(),
+                    criteria: PressureCriteria::default(),
+                },
+            })
+            .unwrap_or(serde_json::Value::Null),
+        }
+    }
+}
+
 /// A generic System One request keeps the state typed until serialization.
+/// Questions travel as pre-built JSON so arms can evaluate different
+/// question sets (V1 document or V3 single-question sets) on one state.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemOneRequest<S> {
     pub model: &'static str,
     pub state: S,
-    pub questions: V1Questions,
+    pub questions: serde_json::Value,
 }
 
 impl<S> SystemOneRequest<S> {
     pub fn new(state: S, candidate_buy_price: PriceTicks) -> Self {
+        Self::with_questions(state, QuestionSet::V1.build(candidate_buy_price))
+    }
+
+    pub fn with_questions(state: S, questions: serde_json::Value) -> Self {
         Self {
             model: MODEL,
             state,
-            questions: V1Questions::new(candidate_buy_price),
+            questions,
         }
     }
 }
@@ -335,6 +433,42 @@ mod tests {
             json!("choice")
         );
         assert!(value["questions"]["repricing_ticks"]["criteria"].is_object());
+    }
+
+    #[test]
+    fn v3_sets_serialize_to_single_typed_questions() {
+        let fair =
+            QuestionSet::FairValue.build(PriceTicks::from_f64(0.44));
+        assert_eq!(
+            fair["fair_p_yes"]["type"],
+            serde_json::json!("noul")
+        );
+        assert!(fair["fair_p_yes"]["instructions"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("resolve to YES"));
+
+        let pressure =
+            QuestionSet::PressureComposite.build(PriceTicks::from_f64(0.44));
+        assert_eq!(
+            pressure["pressure_5s"]["type"],
+            serde_json::json!("choice")
+        );
+        let criteria = pressure["pressure_5s"]["criteria"]
+            .as_object()
+            .expect("pressure criteria should be an object");
+        for level in [
+            "STRONG_DOWN",
+            "MILD_DOWN",
+            "NEUTRAL",
+            "MILD_UP",
+            "STRONG_UP",
+        ] {
+            assert!(
+                criteria.contains_key(level),
+                "pressure criteria must define {level}"
+            );
+        }
     }
 
     #[test]

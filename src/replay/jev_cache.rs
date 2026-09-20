@@ -15,7 +15,7 @@ pub struct JevCacheKey {
 /// Cached Jev signal with its original request/response payloads.
 #[derive(Debug, Clone)]
 pub struct CachedJev {
-    pub signal_json: String,
+    pub envelope_json: String,
     pub latency_ms: u64,
     /// Whether the cached evaluation came from a live call (vs stub/assumed).
     pub live: bool,
@@ -84,7 +84,7 @@ mod tests {
         c.put(
             key("a"),
             CachedJev {
-                signal_json: "{}".to_owned(),
+                envelope_json: "{}".to_owned(),
                 latency_ms: 100,
                 live: false,
             },
@@ -99,7 +99,7 @@ mod tests {
         c.put(
             key("a"),
             CachedJev {
-                signal_json: "{}".to_owned(),
+                envelope_json: "{}".to_owned(),
                 latency_ms: 1,
                 live: false,
             },

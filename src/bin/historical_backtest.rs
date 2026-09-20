@@ -10,7 +10,8 @@ use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regime
 use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
     ARMS, Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner,
-    RunnerOutput, Split, StubJev, build_report, read_underlying_window, write_json, write_markdown,
+    RunnerOutput, Split, StubJev, V3_ARMS, build_report, read_underlying_window, write_json,
+    write_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -316,7 +317,8 @@ fn run_corpus<E: JevEvaluator>(
         // Per-condition pair cap: spreads the budget across buckets so one
         // long trajectory cannot consume the whole run. The SIGNAL ALPHA run
         // raises the cap (pre-registered) to reach 500-1000 pairs.
-        let remaining = config.max_pairs.saturating_sub(all_rows.len() / ARMS.len());
+        let remaining =
+            config.max_pairs.saturating_sub(all_rows.len() / config.arms.len().max(1));
         if remaining == 0 {
             break;
         }
@@ -503,6 +505,14 @@ fn main() {
             .collect()
     };
     let stratified = parse_arg(&args, "--stride", "0") == "1";
+    // Question-form experiments: "v3" evaluates CONTROL (V1 questions) +
+    // FAIR_VALUE + PRESSURE_COMPOSITE on the same MICRO state.
+    // Default keeps the V1/V2 state-variant trio.
+    let arms = match parse_arg(&args, "--arms", "v1micro").as_str() {
+        "v3" => V3_ARMS.to_vec(),
+        _ => ARMS.to_vec(),
+    };
+    config.arms = arms;
     let real_jev = parse_arg(&args, "--real-jev", "0") == "1";
     let max_jev_calls: u64 = parse_arg(&args, "--max-jev-calls", "20")
         .parse()
@@ -594,7 +604,8 @@ fn main() {
     // Console summary per arm (never global only). Signal drift (all
     // usable evaluations) is the alpha readout; markouts are
     // fill-conditional execution labels.
-    let mut per_arm: Vec<(String, usize, Vec<f64>, Vec<f64>)> = ARMS
+    let mut per_arm: Vec<(String, usize, Vec<f64>, Vec<f64>)> = config
+        .arms
         .iter()
         .map(|a| (a.name.to_owned(), 0, Vec::new(), Vec::new()))
         .collect();

@@ -49,7 +49,24 @@ pub async fn evaluate(
     deadline: Duration,
 ) -> Result<JevEvaluation, JevError> {
     let candidate_buy_price = state.candidate_order.price;
-    let request = SystemOneRequest::new(state.clone(), candidate_buy_price);
+    let questions = crate::jev::request::QuestionSet::V1.build(candidate_buy_price);
+    let (body, sent_at_ms, received_at_ms) =
+        post(state, &questions, api_key, deadline).await?;
+
+    parse_evaluation_json(&body, market_id, state_seq, sent_at_ms, received_at_ms)
+        .map_err(JevError::Parse)
+}
+
+/// Transport-only POST: sends one state with an arm-specific question set
+/// and returns the raw body plus timestamps. Parsing is the caller's job,
+/// so V1 and V3 arms share transport without sharing validation.
+pub async fn post(
+    state: &V1State,
+    questions: &serde_json::Value,
+    api_key: &str,
+    deadline: Duration,
+) -> Result<(Vec<u8>, i64, i64), JevError> {
+    let request = SystemOneRequest::with_questions(state.clone(), questions.clone());
     let sent_at_ms = unix_time_ms();
 
     let response = http_client()
@@ -72,8 +89,7 @@ pub async fn evaluate(
         });
     }
 
-    parse_evaluation_json(&body, market_id, state_seq, sent_at_ms, received_at_ms)
-        .map_err(JevError::Parse)
+    Ok((body.to_vec(), sent_at_ms, received_at_ms))
 }
 
 fn classify_request_error(error: reqwest::Error) -> JevError {

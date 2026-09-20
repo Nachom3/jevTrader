@@ -214,6 +214,77 @@ fn noul(response: &SystemOneResponse, answer_id: &'static str) -> Result<f64, Je
     Ok(value)
 }
 
+/// The five ordered pressure levels and their bipolar values.
+/// Expected pressure in code: sum(probability * value), in [-1, 1].
+pub const PRESSURE_LEVELS: [(&str, f64); 5] = [
+    ("STRONG_DOWN", -1.0),
+    ("MILD_DOWN", -0.5),
+    ("NEUTRAL", 0.0),
+    ("MILD_UP", 0.5),
+    ("STRONG_UP", 1.0),
+];
+
+/// Parses the FAIR_VALUE arm answer: the calibrated fair P(YES) in [0, 1].
+/// Same validation as any noul; the question carries no threshold framing.
+pub fn parse_fair_p_yes(response: &SystemOneResponse) -> Result<f64, JevParseError> {
+    noul(response, "fair_p_yes")
+}
+
+/// Parses the PRESSURE arm answer into (expected pressure, confidence).
+/// Unknown criteria are rejected; values pass through verbatim.
+pub fn parse_pressure(response: &SystemOneResponse) -> Result<(f64, f64), JevParseError> {
+    let answer = response
+        .answers
+        .get("pressure_5s")
+        .ok_or(JevParseError::MissingAnswer("pressure_5s"))?;
+    validate_type(answer, "pressure_5s", "choice")?;
+    let probabilities = answer
+        .probabilities
+        .as_ref()
+        .ok_or(JevParseError::MissingField {
+            answer: "pressure_5s",
+            field: "probabilities",
+        })?;
+
+    for bucket in probabilities.keys() {
+        if !PRESSURE_LEVELS
+            .iter()
+            .any(|(level, _)| level == &bucket.as_str())
+        {
+            return Err(JevParseError::UnexpectedBucket(bucket.clone()));
+        }
+    }
+    for (level, _) in PRESSURE_LEVELS {
+        if !probabilities.contains_key(level) {
+            return Err(JevParseError::MissingBucket(level));
+        }
+    }
+
+    for (bucket, value) in probabilities {
+        if !value.is_finite() || !(0.0..=1.0).contains(value) {
+            return Err(JevParseError::InvalidBucketProbability {
+                bucket: bucket.clone(),
+                value: *value,
+            });
+        }
+    }
+
+    let expectation: f64 = PRESSURE_LEVELS
+        .iter()
+        .map(|(level, value)| probabilities[*level] * value)
+        .sum();
+
+    let confidence = answer.confidence.ok_or(JevParseError::MissingField {
+        answer: "pressure_5s",
+        field: "confidence",
+    })?;
+    if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+        return Err(JevParseError::InvalidConfidence(confidence));
+    }
+
+    Ok((expectation, confidence))
+}
+
 fn choice_distribution(
     response: &SystemOneResponse,
     answer_id: &'static str,
@@ -354,6 +425,53 @@ mod tests {
         assert_eq!(signal.repricing_confidence, 0.79);
         assert_eq!(signal.fill_before_decay, 0.66);
         assert_eq!(signal.fill_toxic, 0.21);
+    }
+
+    fn v3_fair_payload() -> SystemOneResponse {
+        serde_json::from_str(
+            r#"{"answers": {"fair_p_yes": {"type": "noul", "noul": 0.62}}}"#,
+        )
+        .expect("fixture should decode")
+    }
+
+    fn v3_pressure_payload() -> SystemOneResponse {
+        serde_json::from_str(
+            r#"{"answers": {"pressure_5s": {"type": "choice", "choice": "MILD_UP",
+              "probabilities": {"STRONG_DOWN": 0.05, "MILD_DOWN": 0.15,
+                "NEUTRAL": 0.20, "MILD_UP": 0.45, "STRONG_UP": 0.15},
+              "confidence": 0.6}}}"#,
+        )
+        .expect("fixture should decode")
+    }
+
+    #[test]
+    fn fair_value_parses_verbatim_probability() {
+        assert_eq!(
+            parse_fair_p_yes(&v3_fair_payload()).expect("0.62 parses"),
+            0.62
+        );
+        let mut bad = v3_fair_payload();
+        bad.answers.get_mut("fair_p_yes").unwrap().noul = Some(1.5);
+        assert!(matches!(
+            parse_fair_p_yes(&bad),
+            Err(JevParseError::InvalidProbability { .. })
+        ));
+    }
+
+    #[test]
+    fn pressure_parses_expected_value_and_confidence() {
+        // E = .05*-1 + .15*-.5 + .2*0 + .45*.5 + .15*1 = 0.25
+        let (expectation, confidence) =
+            parse_pressure(&v3_pressure_payload()).expect("fixture should validate");
+        assert!((expectation - 0.25).abs() < 1e-12);
+        assert_eq!(confidence, 0.6);
+        let mut missing = v3_pressure_payload();
+        missing.answers.get_mut("pressure_5s").unwrap()
+            .probabilities.as_mut().unwrap().remove("NEUTRAL");
+        assert!(matches!(
+            parse_pressure(&missing),
+            Err(JevParseError::MissingBucket(_))
+        ));
     }
 
     #[test]

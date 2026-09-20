@@ -12,7 +12,6 @@ use jevtrader::domain::{PriceTicks, TickSize};
 use jevtrader::engine::MarketSnapshot;
 use jevtrader::engine::pipeline::{MarkoutTracker, candidate_maker_price};
 use jevtrader::engine::signal_actor::StalenessPolicy;
-use jevtrader::jev::response::{TickDistribution, V1Signal};
 use jevtrader::polymarket::OrderBook;
 use jevtrader::replay::fills::{ExecutionLatency, RestingOrder};
 use jevtrader::replay::markouts::signed_markouts_pp;
@@ -21,7 +20,7 @@ use jevtrader::replay::report::write_markdown;
 use jevtrader::replay::walkforward::WalkforwardWindow;
 use jevtrader::replay::{
     Fidelity, FillProfile, FillSimulator, HistoricalEvent, HistoricalSource, InMemorySource,
-    JevEvaluator, JevOutcome, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split,
+    JevEvaluator, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split,
     StubJev, Synchronizer, SyntheticItem, as_of_backward, build_report,
 };
 use jevtrader::state::feature_builder::{
@@ -86,33 +85,63 @@ impl JevEvaluator for FixedReplayJev {
         _state: &jevtrader::jev::request::V1State,
         _market_id: &str,
         _state_seq: u64,
-        _questions_hash: &str,
         _variant: &str,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> jevtrader::replay::JevOutcome {
-        JevOutcome {
-            signal: V1Signal {
-                yes_pressure_5s: 0.5,
-                no_pressure_5s: 0.5,
-                move_persists: 0.5,
-                underreact_up: 0.5,
-                underreact_down: 0.5,
-                repricing: TickDistribution {
-                    up_3_plus: 0.1,
-                    up_2: 0.1,
-                    up_1: 0.1,
-                    flat: 0.4,
-                    down_1: 0.1,
-                    down_2: 0.1,
-                    down_3_plus: 0.1,
-                },
-                repricing_confidence: 0.0,
-                fill_before_decay: 0.5,
-                fill_toxic: 0.5,
-            },
+    ) -> jevtrader::replay::RawOutcome {
+        if self.error {
+            return jevtrader::replay::RawOutcome {
+                latency_ms: assumed_latency_ms,
+                live: false,
+                error: Some("synthetic Jev failure".to_owned()),
+                envelope_json: String::new(),
+            };
+        }
+        // Neutral envelope shaped by the requested question set: noul 0.5,
+        // choice uniform over its criteria with neutral confidence.
+        let mut answers = serde_json::Map::new();
+        if let Some(object) = questions.as_object() {
+            for (qid, question) in object {
+                let kind = question
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if kind == "noul" {
+                    answers.insert(
+                        qid.clone(),
+                        serde_json::json!({"type": "noul", "noul": 0.5}),
+                    );
+                } else if kind == "choice" {
+                    let mut probabilities = serde_json::Map::new();
+                    let mut keys: Vec<&String> = question
+                        .get("criteria")
+                        .and_then(serde_json::Value::as_object)
+                        .map(|criteria| criteria.keys().collect())
+                        .unwrap_or_default();
+                    keys.sort();
+                    if keys.is_empty() {
+                        keys.push(qid);
+                    }
+                    let share = 1.0 / keys.len() as f64;
+                    for key in keys {
+                        probabilities.insert(key.clone(), serde_json::json!(share));
+                    }
+                    answers.insert(
+                        qid.clone(),
+                        serde_json::json!({
+                            "type": "choice",
+                            "probabilities": probabilities,
+                            "confidence": 0.0,
+                        }),
+                    );
+                }
+            }
+        }
+        jevtrader::replay::RawOutcome {
             latency_ms: assumed_latency_ms,
             live: false,
-            error: self.error.then(|| "synthetic Jev failure".to_owned()),
+            error: None,
+            envelope_json: serde_json::json!({"answers": answers}).to_string(),
         }
     }
 }

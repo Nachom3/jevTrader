@@ -31,8 +31,8 @@ pub use report::{
     ReportRow, SegmentKey, build_report, conditional_markout_5s, write_json, write_markdown,
 };
 pub use runner::{
-    ARMS, Arm, JevEvaluator, JevOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
-    SignalRecord, StubJev, SyntheticItem,
+    ARMS, Arm, JevEvaluator, RawOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
+    SignalRecord, StubJev, SyntheticItem, V3_ARMS,
 };
 pub use source::{ChunkEventSource, HistoricalSource, InMemorySource, read_underlying_window};
 pub use synchronizer::{SynchronizedEvent, Synchronizer, as_of_backward};

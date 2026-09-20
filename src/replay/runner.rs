@@ -13,8 +13,10 @@ use crate::domain::{PriceTicks, TickSize};
 use crate::engine::MarketSnapshot;
 use crate::engine::pipeline::{DecisionInput, MarkoutTracker, candidate_maker_price, decide};
 use crate::engine::signal_actor::StalenessPolicy;
-use crate::jev::request::{V1Questions, V1State};
-use crate::jev::response::{TickDistribution, V1Signal};
+use crate::jev::request::{QuestionSet, V1State};
+use crate::jev::response::{
+    SystemOneResponse, V1Signal, parse_fair_p_yes, parse_pressure, parse_v1_signal,
+};
 use crate::polymarket::OrderBook;
 use crate::state::feature_builder::{
     ContractContext, ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
@@ -26,35 +28,38 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
-/// One Jev evaluation: the judged signal plus how it was obtained.
+/// One Jev evaluation: transport result plus the raw response envelope.
 ///
 /// `latency_ms` is measured wall time for live calls and the configured
 /// profile assumption for stubs/cached replays. `live` is true only for a
-/// real TypeSafe call; `error` carries transport/parse/budget failures, in
-/// which case `signal` is a neutral placeholder the runner must SKIP.
+/// real TypeSafe call. `error` carries transport/budget failures; parsing
+/// is the runner's job per arm, so a populated envelope may still fail
+/// arm-specific validation downstream. `envelope_json` is the verbatim
+/// System One response envelope (`{"answers": {...}}`).
 #[derive(Debug, Clone)]
-pub struct JevOutcome {
-    pub signal: V1Signal,
+pub struct RawOutcome {
     pub latency_ms: u64,
     pub live: bool,
     pub error: Option<String>,
+    pub envelope_json: String,
 }
 
-/// How the runner obtains a Jev signal (real client or deterministic stub).
+/// How the runner obtains Jev evaluations (real client or deterministic stub).
 ///
-/// The runner always hands over a fully built [`V1State`]; stubs may ignore
-/// it and hash its serialization instead. `assumed_latency_ms` is the
-/// replay profile value, used only when no measured latency exists.
+/// The runner hands over a fully built [`V1State`] plus the arm's question
+/// set as wire-shape JSON. Stubs may ignore both and synthesize from hashes
+/// instead. `assumed_latency_ms` is the replay profile value, used only when
+/// no measured latency exists.
 pub trait JevEvaluator {
     fn evaluate(
         &mut self,
         state: &V1State,
         market_id: &str,
         state_seq: u64,
-        questions_hash: &str,
         variant: &str,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> JevOutcome;
+    ) -> RawOutcome;
 }
 
 /// One replay observation with V2 microstructure context.
@@ -124,39 +129,78 @@ impl JevEvaluator for StubJev {
         state: &V1State,
         _market_id: &str,
         _state_seq: u64,
-        _questions_hash: &str,
         _variant: &str,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> JevOutcome {
-        // Paired outputs differ only because the state content differs
-        // (QUANT_V1 carries the quant enrichment in its JSON). No
-        // variant-specific shift is applied: same state => same signal.
+    ) -> RawOutcome {
+        // Deterministic envelope synthesized per (state, question): same
+        // state + same question set => same pseudo-answers. Smoke-valid;
+        // never presented as alpha evidence.
         let state_json = serde_json::to_string(state).unwrap_or_default();
-        let base = self.pseudo(&state_json);
-        let clamp = |v: f64| v.clamp(0.0, 1.0);
-        JevOutcome {
-            signal: V1Signal {
-                yes_pressure_5s: clamp(0.3 + base * 0.5),
-                no_pressure_5s: clamp(0.5 - base * 0.4),
-                move_persists: clamp(0.4 + base * 0.4),
-                underreact_up: clamp(0.5 + base * 0.45),
-                underreact_down: clamp(0.35 - base * 0.2),
-                repricing: TickDistribution {
-                    up_3_plus: 0.05 + base * 0.1,
-                    up_2: 0.10 + base * 0.1,
-                    up_1: 0.20 + base * 0.2,
-                    flat: 0.25,
-                    down_1: 0.15,
-                    down_2: 0.05,
-                    down_3_plus: 0.05,
-                },
-                repricing_confidence: 0.6,
-                fill_before_decay: clamp(0.5 + base * 0.3),
-                fill_toxic: clamp(0.35 - base * 0.2),
-            },
+        let mut answers = serde_json::Map::new();
+        if let Some(object) = questions.as_object() {
+            for (qid, question) in object {
+                let kind = question
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let base = self.pseudo(&format!("{state_json}{qid}"));
+                let clamp = |v: f64| v.clamp(0.0, 1.0);
+                if kind == "noul" {
+                    answers.insert(
+                        qid.clone(),
+                        serde_json::json!({
+                            "type": "noul",
+                            "noul": clamp(0.3 + base * 0.5),
+                        }),
+                    );
+                } else if kind == "choice" {
+                    let mut probabilities = serde_json::Map::new();
+                    let mut keys: Vec<&String> = question
+                        .get("criteria")
+                        .and_then(serde_json::Value::as_object)
+                        .map(|criteria| criteria.keys().collect())
+                        .unwrap_or_default();
+                    keys.sort();
+                    if keys.is_empty() {
+                        keys.push(qid);
+                    }
+                    let share = 1.0 / keys.len() as f64;
+                    for (index, key) in keys.iter().enumerate() {
+                        let jitter = (base + index as f64 * 0.037) % 1.0;
+                        probabilities.insert(
+                            (*key).clone(),
+                            serde_json::json!(clamp(share * (0.5 + jitter))),
+                        );
+                    }
+                    // Renormalize: synthesized distributions must validate.
+                    let total: f64 = probabilities
+                        .values()
+                        .filter_map(serde_json::Value::as_f64)
+                        .sum();
+                    if total > 0.0 {
+                        for value in probabilities.values_mut() {
+                            if let Some(probability) = value.as_f64() {
+                                *value = serde_json::json!(probability / total);
+                            }
+                        }
+                    }
+                    answers.insert(
+                        qid.clone(),
+                        serde_json::json!({
+                            "type": "choice",
+                            "probabilities": probabilities,
+                            "confidence": 0.5,
+                        }),
+                    );
+                }
+            }
+        }
+        RawOutcome {
             latency_ms: assumed_latency_ms,
             live: false,
             error: None,
+            envelope_json: serde_json::json!({"answers": answers}).to_string(),
         }
     }
 }
@@ -204,89 +248,62 @@ impl JevEvaluator for RealJev {
         state: &V1State,
         market_id: &str,
         state_seq: u64,
-        _questions_hash: &str,
-        _variant: &str,
+        variant: &str,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> JevOutcome {
+    ) -> RawOutcome {
         if self.calls >= self.max_calls {
-            return JevOutcome {
-                signal: neutral_signal(),
+            return RawOutcome {
                 latency_ms: assumed_latency_ms,
                 live: false,
                 error: Some(format!(
                     "Jev budget exhausted ({}/{})",
                     self.calls, self.max_calls
                 )),
+                envelope_json: String::new(),
             };
         }
         self.calls += 1;
-        let result = self.runtime.block_on(crate::jev::client::evaluate(
+        let result = self.runtime.block_on(crate::jev::client::post(
             state,
-            state_seq,
-            market_id,
+            questions,
             &self.api_key,
             self.deadline,
         ));
         // Per-call observability for budgeted live runs. Real judgments
-        // are the only alpha evidence; always log what Jev actually said.
+        // are the only alpha evidence; parsed values are logged by the
+        // runner after arm-specific validation.
         let verbose = std::env::var("JEV_VERBOSE").is_ok();
         match result {
-            Ok(evaluation) => {
+            Ok((body, sent_at_ms, received_at_ms)) => {
+                let latency_ms = received_at_ms.saturating_sub(sent_at_ms).max(0) as u64;
+                self.latencies_ms.push(latency_ms);
                 if verbose {
-                    let s = &evaluation.signal;
                     eprintln!(
-                        "JEV LIVE market={market_id} seq={state_seq} latency_ms={} under_up={:.3} p_up1={:.3} persist={:.3} fill={:.3} toxic={:.3}",
-                        evaluation.latency_ms,
-                        s.underreact_up,
-                        s.p_up_ge_1_tick(),
-                        s.move_persists,
-                        s.fill_before_decay,
-                        s.fill_toxic,
+                        "JEV LIVE market={market_id} seq={state_seq} variant={variant} latency_ms={latency_ms}"
                     );
                 }
-                self.latencies_ms.push(evaluation.latency_ms);
-                JevOutcome {
-                    latency_ms: evaluation.latency_ms,
-                    signal: evaluation.signal,
+                RawOutcome {
+                    latency_ms,
                     live: true,
                     error: None,
+                    envelope_json: String::from_utf8_lossy(&body).into_owned(),
                 }
             }
             Err(error) => {
                 if verbose {
-                    eprintln!("JEV ERROR market={market_id} seq={state_seq}: {error}");
+                    eprintln!(
+                        "JEV ERROR market={market_id} seq={state_seq} variant={variant}: {error}"
+                    );
                 }
-                JevOutcome {
-                    signal: neutral_signal(),
+                RawOutcome {
                     latency_ms: assumed_latency_ms,
                     live: false,
                     error: Some(error.to_string()),
+                    envelope_json: String::new(),
                 }
             }
         }
-    }
-}
-
-/// Neutral 0.5 placeholder; the runner must SKIP error outcomes, never quote.
-fn neutral_signal() -> V1Signal {
-    V1Signal {
-        yes_pressure_5s: 0.5,
-        no_pressure_5s: 0.5,
-        move_persists: 0.5,
-        underreact_up: 0.5,
-        underreact_down: 0.5,
-        repricing: TickDistribution {
-            up_3_plus: 0.05,
-            up_2: 0.10,
-            up_1: 0.20,
-            flat: 0.30,
-            down_1: 0.15,
-            down_2: 0.10,
-            down_3_plus: 0.10,
-        },
-        repricing_confidence: 0.0,
-        fill_before_decay: 0.5,
-        fill_toxic: 0.5,
     }
 }
 
@@ -306,6 +323,9 @@ pub struct ReplayConfig {
     /// never collide across calls; the caller owns namespace uniqueness
     /// (run_corpus uses condition_id). Empty preserves single-call behavior.
     pub pair_namespace: String,
+    /// Arms evaluated on every snapshot (V3 runs override with V3_ARMS).
+    /// Smoke default is the V1/V2 trio; row counts divide by its length.
+    pub arms: Vec<Arm>,
     pub tick_size: TickSize,
     pub size: u64,
     pub max_pairs: usize,
@@ -325,6 +345,7 @@ impl ReplayConfig {
             latency: LatencyProfile::Base,
             latency_distribution: LatencyDistribution::default(),
             pair_namespace: String::new(),
+            arms: ARMS.to_vec(),
             tick_size: TickSize::from_f64(0.01),
             size: 10,
             max_pairs: 100,
@@ -357,11 +378,13 @@ pub struct SignalRecord {
 /// CONTROL is the frozen V1 state (reference arm, byte-identical to v1).
 /// MICRO_V2 carries real microstructure (OFI/flow, perp, fixed distance).
 /// MICRO_V2_QUANT adds quant enrichment on the micro state (secondary).
+/// V3 arms share the MICRO state and vary only the question set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arm {
     pub name: &'static str,
     pub quant: bool,
     pub micro: bool,
+    pub questions: QuestionSet,
 }
 
 /// The evaluated arms, in row-emission order. Row counts divide by this.
@@ -370,16 +393,75 @@ pub const ARMS: [Arm; 3] = [
         name: "CONTROL",
         quant: false,
         micro: false,
+        questions: QuestionSet::V1,
     },
     Arm {
         name: "MICRO_V2",
         quant: false,
         micro: true,
+        questions: QuestionSet::V1,
     },
     Arm {
         name: "MICRO_V2_QUANT",
         quant: true,
         micro: true,
+        questions: QuestionSet::V1,
+    },
+];
+
+/// Parsed per-arm judgment. V1 carries the eight validated answers;
+/// Fair carries the calibrated fair P(YES); Pressure carries the expected
+/// bipolar value plus the distribution confidence.
+enum ParsedArm {
+    V1(V1Signal),
+    Fair(f64),
+    Pressure { expectation: f64, confidence: f64 },
+}
+
+/// Validates one raw envelope against the arm's question set. Values pass
+/// through verbatim; no renormalization, no thresholding, no decisions.
+fn parse_arm_envelope(
+    questions: QuestionSet,
+    envelope_json: &str,
+) -> Result<ParsedArm, String> {
+    let response: SystemOneResponse =
+        serde_json::from_str(envelope_json).map_err(|e| format!("envelope decode: {e}"))?;
+    match questions {
+        QuestionSet::V1 => parse_v1_signal(&response)
+            .map(ParsedArm::V1)
+            .map_err(|e| e.to_string()),
+        QuestionSet::FairValue => parse_fair_p_yes(&response)
+            .map(ParsedArm::Fair)
+            .map_err(|e| e.to_string()),
+        QuestionSet::PressureComposite => parse_pressure(&response)
+            .map(|(expectation, confidence)| ParsedArm::Pressure {
+                expectation,
+                confidence,
+            })
+            .map_err(|e| e.to_string()),
+    }
+}
+
+/// V3 question-form arms: same MICRO state, different question sets.
+/// No quant arm: quant proved ~0 and is out of this experiment's scope.
+pub const V3_ARMS: [Arm; 3] = [
+    Arm {
+        name: "CONTROL",
+        quant: false,
+        micro: true,
+        questions: QuestionSet::V1,
+    },
+    Arm {
+        name: "FAIR_VALUE",
+        quant: false,
+        micro: true,
+        questions: QuestionSet::FairValue,
+    },
+    Arm {
+        name: "PRESSURE_COMPOSITE",
+        quant: false,
+        micro: true,
+        questions: QuestionSet::PressureComposite,
     },
 ];
 
@@ -440,10 +522,11 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         rules: &str,
         market_id: &str,
         seq: u64,
-        variant: &str,
+        arm: &Arm,
         quant: Option<crate::state::quant_features::QuantFeatures>,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> (JevOutcome, String, String) {
+    ) -> (RawOutcome, String, String) {
         let state = V1State::new(
             question,
             rules,
@@ -453,22 +536,29 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             candidate,
         );
         let state_json = serde_json::to_string(&state).unwrap_or_default();
-        let questions_json =
-            serde_json::to_string(&V1Questions::new(candidate)).unwrap_or_default();
+        let questions_json = serde_json::to_string(questions).unwrap_or_default();
         let qhash = hash_str(&questions_json);
         let hash = hash_str(&state_json);
         let key = JevCacheKey {
             state_hash: hash.clone(),
             questions_hash: qhash,
             model: "jev-latest".to_owned(),
-            variant: variant.to_owned(),
+            variant: arm.name.to_owned(),
         };
-        let outcome =
-            self.cached_or_evaluate(&key, &state, market_id, seq, variant, assumed_latency_ms);
+        let outcome = self.cached_or_evaluate(
+            &key,
+            &state,
+            market_id,
+            seq,
+            arm.name,
+            questions,
+            assumed_latency_ms,
+        );
         (outcome, hash, state_json)
     }
 
-    /// Cache lookup with evaluator fallback; stores complete signals.
+    /// Cache lookup with evaluator fallback; stores raw envelopes.
+    #[allow(clippy::too_many_arguments)]
     fn cached_or_evaluate(
         &mut self,
         key: &JevCacheKey,
@@ -476,28 +566,29 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         market_id: &str,
         seq: u64,
         variant: &str,
+        questions: &serde_json::Value,
         assumed_latency_ms: u64,
-    ) -> JevOutcome {
+    ) -> RawOutcome {
         if let Some(cached) = self.cache.get(key) {
-            return JevOutcome {
-                signal: signal_from_cache(&cached),
+            return RawOutcome {
                 latency_ms: cached.latency_ms,
                 live: cached.live,
                 error: None,
+                envelope_json: cached.envelope_json.clone(),
             };
         }
         let outcome = self.evaluator.evaluate(
             state,
             market_id,
             seq,
-            &key.questions_hash,
             variant,
+            questions,
             assumed_latency_ms,
         );
         self.cache.put(
             key.clone(),
             CachedJev {
-                signal_json: serde_json::to_string(&outcome.signal).unwrap_or_default(),
+                envelope_json: outcome.envelope_json.clone(),
                 latency_ms: outcome.latency_ms,
                 live: outcome.live,
             },
@@ -557,7 +648,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         let stream_open = items.first().map(|i| i.spot).unwrap_or(0.0);
 
         for (seq, it) in items.iter().enumerate() {
-            if rows.len() / ARMS.len() >= self.config.max_pairs {
+            if rows.len() / self.config.arms.len().max(1) >= self.config.max_pairs {
                 break;
             }
             let ts = it.ts_ms;
@@ -672,8 +763,9 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 LatencyProfile::Empirical => self.config.latency_distribution.sample_ms(seq as u64),
                 _ => jev_latency,
             };
-            let mut arm_results = Vec::with_capacity(ARMS.len());
-            for arm in ARMS {
+            let arms = self.config.arms.clone();
+            let mut arm_results = Vec::with_capacity(arms.len());
+            for arm in &arms {
                 let (feat, quant) = if arm.micro {
                     (
                         &features_micro,
@@ -687,6 +779,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                             .then(|| build_quant(&features, &self.config.quant.params)),
                     )
                 };
+                let questions = arm.questions.build(candidate);
                 let (outcome, hash, json) = self.evaluate_arm(
                     feat,
                     &poly,
@@ -695,12 +788,13 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     &rules,
                     market_id,
                     seq as u64,
-                    arm.name,
+                    arm,
                     quant,
+                    &questions,
                     assumed_latency_ms,
                 );
                 jev_errors += outcome.error.is_some() as usize;
-                arm_results.push((arm.name, outcome, hash, json));
+                arm_results.push((*arm, outcome, hash, json));
             }
             // Latency: the response is usable at ts+jev_latency while the
             // market keeps printing. Two staleness gates, both in event
@@ -725,10 +819,10 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     self.config.run_id, self.config.pair_namespace, seq
                 )
             };
-            for (variant, jev, sh, state_json) in arm_results {
-                let sig = &jev.signal;
-                let lat = jev.latency_ms;
-                let err = jev.error.as_ref();
+            for (arm, outcome, sh, state_json) in arm_results {
+                let lat = outcome.latency_ms;
+                let live = outcome.live;
+                let mut branch_error = outcome.error;
                 let usable_at = ts + lat as i64;
                 let seq_lag = future_mids
                     .iter()
@@ -739,26 +833,79 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 if stale {
                     stale_skips += 1;
                 }
-                // Same strategy path as live: decide on a snapshot.
+                // Per-arm parsing: V1 arms validate the eight answers and may
+                // quote; V3 arms extract their metric and never quote.
+                // Parse failures behave like transport errors (SKIP +
+                // incomplete, no sidecar record).
+                let mut signal: Option<V1Signal> = None;
+                let mut fair_p_yes: Option<f64> = None;
+                let mut pressure: Option<f64> = None;
+                let mut pressure_confidence: Option<f64> = None;
+                if branch_error.is_none() {
+                    match parse_arm_envelope(arm.questions, &outcome.envelope_json) {
+                        Ok(ParsedArm::V1(sig)) => {
+                            signal = Some(sig);
+                        }
+                        Ok(ParsedArm::Fair(fair)) => {
+                            fair_p_yes = Some(fair);
+                        }
+                        Ok(ParsedArm::Pressure {
+                            expectation,
+                            confidence,
+                        }) => {
+                            pressure = Some(expectation);
+                            pressure_confidence = Some(confidence);
+                        }
+                        Err(parse_err) => {
+                            branch_error = Some(parse_err);
+                        }
+                    }
+                }
+                let err = branch_error.as_ref();
+                if live && std::env::var("JEV_VERBOSE").is_ok() {
+                    match (&signal, fair_p_yes, pressure) {
+                        (Some(sig), _, _) => {
+                            eprintln!(
+                                "JEV LIVE market={market_id} seq={seq} variant={} latency_ms={lat} under_up={:.3} p_up1={:.3} persist={:.3} fill={:.3} toxic={:.3}",
+                                arm.name,
+                                sig.underreact_up,
+                                sig.p_up_ge_1_tick(),
+                                sig.move_persists,
+                                sig.fill_before_decay,
+                                sig.fill_toxic,
+                            );
+                        }
+                        (None, Some(fair), _) => {
+                            eprintln!(
+                                "JEV LIVE market={market_id} seq={seq} variant={} latency_ms={lat} fair_p_yes={fair:.3}",
+                                arm.name,
+                            );
+                        }
+                        (None, None, Some(pressure_value)) => {
+                            eprintln!(
+                                "JEV LIVE market={market_id} seq={seq} variant={} latency_ms={lat} pressure={pressure_value:+.3}",
+                                arm.name,
+                            );
+                        }
+                        (None, None, None) => {}
+                    }
+                }
+                // Same strategy path as live, V1 arms only: decide on a
+                // snapshot. V3 arms carry no quote rule by design.
                 let snapshot = snapshot_for(&book, stale);
-                let outcome = if err.is_some() {
-                    crate::engine::pipeline::Outcome::Skip(
-                        crate::engine::pipeline::SkipReason::JevError,
-                    )
-                } else if stale {
-                    crate::engine::pipeline::Outcome::Skip(
-                        crate::engine::pipeline::SkipReason::UnusableSignal,
-                    )
-                } else {
-                    decide(DecisionInput {
-                        signal: sig,
-                        market: &snapshot,
-                        thresholds: &self.config.thresholds,
-                        tick_size,
-                        size: self.config.size,
-                    })
+                let quoted = match (&signal, arm.questions) {
+                    (Some(sig), QuestionSet::V1) if err.is_none() && !stale => {
+                        decide(DecisionInput {
+                            signal: sig,
+                            market: &snapshot,
+                            thresholds: &self.config.thresholds,
+                            tick_size,
+                            size: self.config.size,
+                        })
+                        .is_quote()
+                    }
+                    _ => false,
                 };
-                let quoted = outcome.is_quote();
                 // Quote intent price mirrors live decide_quote.
                 let quote_price = if quoted { candidate.to_f64() } else { 0.0 };
                 // Fill check on FUTURE prints only (no look-ahead into the
@@ -826,7 +973,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 rows.push(ReportRow {
                     run_id: self.config.run_id.clone(),
                     pair_id: pair_id.clone(),
-                    variant: variant.to_owned(),
+                    variant: arm.name.to_owned(),
                     state_hash: sh.clone(),
                     market_id: market_id.clone(),
                     asset: asset.clone(),
@@ -858,20 +1005,27 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     drift_10s_pp: drift[2],
                     drift_30s_pp: drift[3],
                     drift_60s_pp: drift[4],
+                    fair_p_yes,
+                    pressure,
+                    pressure_confidence,
                     pnl_pp: pnl,
                     stale_skipped: stale,
                     incomplete_pair: err.is_some(),
                 });
-                signals.push(SignalRecord {
-                    pair_id: pair_id.clone(),
-                    variant: variant.to_owned(),
-                    market_id: market_id.clone(),
-                    state_hash: sh.clone(),
-                    state_json: state_json.clone(),
-                    signal: sig.clone(),
-                    jev_latency_ms: lat,
-                    live: jev.live,
-                });
+                // Sidecar covers V1 arms with successful parses only; V3
+                // metrics live in the row itself.
+                if let (QuestionSet::V1, Some(sig)) = (arm.questions, signal.as_ref()) {
+                    signals.push(SignalRecord {
+                        pair_id: pair_id.clone(),
+                        variant: arm.name.to_owned(),
+                        market_id: market_id.clone(),
+                        state_hash: sh.clone(),
+                        state_json: state_json.clone(),
+                        signal: sig.clone(),
+                        jev_latency_ms: lat,
+                        live,
+                    });
+                }
             }
         }
         RunnerOutput {
@@ -1201,10 +1355,6 @@ fn hash_str(s: &str) -> String {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     format!("{:016x}", h.finish())
-}
-
-fn signal_from_cache(c: &CachedJev) -> V1Signal {
-    serde_json::from_str(&c.signal_json).unwrap_or_else(|_| neutral_signal())
 }
 
 fn synthetic_question(market_id: &str) -> String {
