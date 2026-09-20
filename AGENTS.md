@@ -232,3 +232,22 @@ Capturar repricing, no resolucion.
 `fill_before_decay`, `fill_toxic` (Noul con candidate order en el state).
 Regla inicial `should_quote`: under_up>.75, p_up>=1tick>.65, persist>.60,
 fill>.60, toxic<.30, sin conflicto. Labels: markouts maker +1s/+5s/+30s.
+
+## 16. Agent workflow (mandatory): subagents + ODD, always
+
+- Every request runs Organic Driven Development: authorize (read-only stays
+  read-only), explore first, resolve uncertainty, classify, track substantial
+  work in `odd/tasks/<feature>.md` before the first source write, implement
+  task by task, close each task with a work-unit commit on a feature branch
+  (never on `main`), then report verified outcomes.
+- Delegate through subagents whenever available: exploration/mapping to a
+  scout, multi-file implementation to one bounded writer with narrow
+  `## Allowed edit surfaces`, verification commands to a verifier. The parent
+  orchestrates and stays thin; executing past a fired delegation trigger
+  inline is a defect even if the work succeeds. Small mechanical work
+  (typo, one-file edit, 1-3 file read-only check) stays inline.
+- Keep writes single-threaded; keep the visible todo list current with
+  exactly one task in_progress.
+- Never commit, push, merge, or publish without explicit user authorization.
+  Never lower thresholds, change Jev wording, or tune from OOS to make
+  results look better.
