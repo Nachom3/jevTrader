@@ -150,6 +150,8 @@ fn run_corpus<E: JevEvaluator>(
     config: &ReplayConfig,
     exact_only: bool,
     per_condition_cap: usize,
+    condition_filter: &[String],
+    stratified: bool,
 ) -> Option<RunnerOutput> {
     let metas = read_market_metas(corpus);
     if metas.is_empty() {
@@ -277,7 +279,24 @@ fn run_corpus<E: JevEvaluator>(
         }
         round += 1;
     }
+    // Diagnostic runs restrict to a pre-registered condition list (no
+    // cherry-picking at runtime). Empty filter replays everything.
+    if !condition_filter.is_empty() {
+        let before = conditions.len();
+        conditions.retain(|c| condition_filter.contains(c));
+        for wanted in condition_filter {
+            if !conditions.contains(wanted) {
+                println!("conditions={wanted} NOT IN TAPE (skipped)");
+            }
+        }
+        println!(
+            "condition_filter listed={} in_tape={} (of {before} interleaved)",
+            condition_filter.len(),
+            conditions.len()
+        );
+    }
     let mut all_rows = Vec::new();
+    let mut all_signals = Vec::new();
     let mut skipped_no_meta = 0usize;
     let (mut jev_hits, mut jev_misses, mut stale, mut incomplete, mut jerrs) =
         (0, 0, 0usize, 0usize, 0usize);
@@ -311,8 +330,17 @@ fn run_corpus<E: JevEvaluator>(
         let mut single_map = HashMap::new();
         single_map.insert(condition.clone(), single_meta);
         // Full per-market trajectory (capped): fills and markouts need
-        // real future prints, not a 4-item window.
-        let poly_stream: Vec<HistoricalEvent> = poly.iter().take(500).cloned().collect();
+        // real future prints, not a 4-item window. Stratified diagnostic
+        // runs spread evals evenly across the trajectory (stride =
+        // len/cap) so sampled states vary in time-remaining, moves, and
+        // regime; default replays the trajectory head (legacy behavior).
+        let stride = if stratified {
+            (poly.len() / per_condition_cap.max(1)).max(1)
+        } else {
+            1
+        };
+        let poly_stream: Vec<HistoricalEvent> =
+            poly.iter().step_by(stride).take(500).cloned().collect();
         // Windowed underlying for THIS condition only: [first_poly - 2h,
         // last_poly], thinned to ~1 tick/s (thin 16) and capped. No
         // look-ahead (upper bound) and no cross-week bleed (lower bound).
@@ -341,10 +369,12 @@ fn run_corpus<E: JevEvaluator>(
         incomplete += out.incomplete_pairs;
         jerrs += out.jev_errors;
         all_rows.extend(out.rows);
+        all_signals.extend(out.signals);
     }
     println!("skipped_no_meta={skipped_no_meta}");
     Some(jevtrader::replay::RunnerOutput {
         rows: all_rows,
+        signals: all_signals,
         jev_hits,
         jev_misses,
         stale_skips: stale,
@@ -376,8 +406,18 @@ fn execute<E: JevEvaluator>(
     config: &ReplayConfig,
     exact_only: bool,
     per_condition_cap: usize,
+    condition_filter: &[String],
+    stratified: bool,
 ) -> RunnerOutput {
-    match run_corpus(runner, corpus, config, exact_only, per_condition_cap) {
+    match run_corpus(
+        runner,
+        corpus,
+        config,
+        exact_only,
+        per_condition_cap,
+        condition_filter,
+        stratified,
+    ) {
         Some(output) => {
             println!("corpus=HISTORICAL dir={corpus}");
             output
@@ -423,6 +463,19 @@ fn main() {
         .parse()
         .unwrap_or(4)
         .clamp(1, 100);
+    // Diagnostic runs: comma-separated condition_ids ("" = all) and
+    // stratified state sampling across each trajectory (--stride 1).
+    let conditions_arg = parse_arg(&args, "--conditions", "");
+    let condition_filter: Vec<String> = if conditions_arg.trim().is_empty() {
+        Vec::new()
+    } else {
+        conditions_arg
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let stratified = parse_arg(&args, "--stride", "0") == "1";
     let real_jev = parse_arg(&args, "--real-jev", "0") == "1";
     let max_jev_calls: u64 = parse_arg(&args, "--max-jev-calls", "20")
         .parse()
@@ -438,7 +491,7 @@ fn main() {
         let evaluator = RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
             .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
         let mut runner = ReplayRunner::new(config.clone(), evaluator);
-        let output = execute(&mut runner, &corpus, &config, exact_only, per_condition_cap);
+        let output = execute(&mut runner, &corpus, &config, exact_only, per_condition_cap, &condition_filter, stratified);
         println!(
             "jev_live_calls={} budget={}",
             runner.evaluator.calls, max_jev_calls
@@ -467,7 +520,7 @@ fn main() {
         output
     } else {
         let mut runner = ReplayRunner::new(config.clone(), StubJev::new(42));
-        execute(&mut runner, &corpus, &config, exact_only, per_condition_cap)
+        execute(&mut runner, &corpus, &config, exact_only, per_condition_cap, &condition_filter, stratified)
     };
 
     let json = write_json(&output.rows).expect("json renders");
@@ -475,6 +528,24 @@ fn main() {
         let _ = fs::create_dir_all(parent);
     }
     fs::write(&out, &json).expect("pairs json writes");
+    // Diagnostic sidecar: verbatim (state, signal) per evaluation, no
+    // thresholding or aggregation. Disabled by default.
+    let signals_out = parse_arg(&args, "--signals-out", "");
+    if !signals_out.is_empty() {
+        match serde_json::to_string_pretty(&output.signals) {
+            Ok(sjson) => {
+                if fs::write(&signals_out, &sjson).is_ok() {
+                    println!(
+                        "signals_out n={} -> {signals_out}",
+                        output.signals.len()
+                    );
+                } else {
+                    println!("signals_out WRITE FAILED {signals_out}");
+                }
+            }
+            Err(err) => println!("signals_out SERIALIZE FAILED: {err}"),
+        }
+    }
     let summary = build_report(&output.rows);
     let md = write_markdown(&summary);
     let md_path = format!("{}.md", out.trim_end_matches(".json"));

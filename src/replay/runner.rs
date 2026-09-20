@@ -309,10 +309,29 @@ impl ReplayConfig {
     }
 }
 
+/// One evaluated (state, signal) pair for the diagnostic sidecar.
+///
+/// Persisted verbatim (no thresholding, no aggregation) so offline analysis
+/// can study Jev's raw answers: distributions, state-variance, QUANT-CONTROL
+/// deltas, and drift correlations. `state_json` is the exact evaluated
+/// V1State payload.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SignalRecord {
+    pub pair_id: String,
+    pub variant: String,
+    pub market_id: String,
+    pub state_hash: String,
+    pub state_json: String,
+    pub signal: V1Signal,
+    pub jev_latency_ms: u64,
+    pub live: bool,
+}
+
 /// Output of one replay run.
 #[derive(Debug)]
 pub struct RunnerOutput {
     pub rows: Vec<ReportRow>,
+    pub signals: Vec<SignalRecord>,
     pub jev_hits: u64,
     pub jev_misses: u64,
     pub stale_skips: usize,
@@ -352,8 +371,10 @@ impl<E: JevEvaluator> ReplayRunner<E> {
     /// fidelity, regime)`.
     #[allow(clippy::too_many_arguments)]
     /// Evaluates one frozen snapshot in both variants and returns
-    /// `(control_signal, control_latency, control_error, control_hash,
-    /// quant_signal, quant_latency, quant_error, quant_hash)`.
+    /// `(control_outcome, control_hash, control_state_json, quant_outcome,
+    /// quant_hash, quant_state_json)`. The state JSONs are the exact
+    /// evaluated payloads (already serialized for hashing); the diagnostic
+    /// sidecar persists them verbatim for offline analysis.
     /// Latencies are measured for live calls and assumed otherwise; the
     /// Jev cache stores complete signals keyed by state + questions +
     /// model + variant.
@@ -369,16 +390,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         market_id: &str,
         seq: u64,
         assumed_latency_ms: u64,
-    ) -> (
-        V1Signal,
-        u64,
-        Option<String>,
-        String,
-        V1Signal,
-        u64,
-        Option<String>,
-        String,
-    ) {
+    ) -> (JevOutcome, String, String, JevOutcome, String, String) {
         let quant = build_quant(features, &self.config.quant.params);
         let control_state = V1State::new(
             question,
@@ -415,7 +427,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             model: "jev-latest".to_owned(),
             variant: "QUANT_V1".to_owned(),
         };
-        let (sig_c, lat_c, err_c) = self.cached_or_evaluate(
+        let out_c = self.cached_or_evaluate(
             &key_c,
             &control_state,
             market_id,
@@ -423,7 +435,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             "CONTROL",
             assumed_latency_ms,
         );
-        let (sig_q, lat_q, err_q) = self.cached_or_evaluate(
+        let out_q = self.cached_or_evaluate(
             &key_q,
             &quant_state,
             market_id,
@@ -431,7 +443,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             "QUANT_V1",
             assumed_latency_ms,
         );
-        (sig_c, lat_c, err_c, hash_c, sig_q, lat_q, err_q, hash_q)
+        (out_c, hash_c, control_json, out_q, hash_q, quant_json)
     }
 
     /// Cache lookup with evaluator fallback; stores complete signals.
@@ -443,9 +455,14 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         seq: u64,
         variant: &str,
         assumed_latency_ms: u64,
-    ) -> (V1Signal, u64, Option<String>) {
+    ) -> JevOutcome {
         if let Some(cached) = self.cache.get(key) {
-            return (signal_from_cache(&cached), cached.latency_ms, None);
+            return JevOutcome {
+                signal: signal_from_cache(&cached),
+                latency_ms: cached.latency_ms,
+                live: cached.live,
+                error: None,
+            };
         }
         let outcome = self.evaluator.evaluate(
             state,
@@ -455,17 +472,15 @@ impl<E: JevEvaluator> ReplayRunner<E> {
             variant,
             assumed_latency_ms,
         );
-        let signal = outcome.signal.clone();
-        let latency = outcome.latency_ms;
-        let error = outcome.error.clone();
         self.cache.put(
             key.clone(),
             CachedJev {
-                signal_json: serde_json::to_string(&signal).unwrap_or_default(),
-                latency_ms: latency,
+                signal_json: serde_json::to_string(&outcome.signal).unwrap_or_default(),
+                latency_ms: outcome.latency_ms,
+                live: outcome.live,
             },
         );
-        (signal, latency, error)
+        outcome
     }
 
     pub fn run_synthetic(
@@ -485,6 +500,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         questions: &std::collections::HashMap<String, (String, String)>,
     ) -> RunnerOutput {
         let mut rows = Vec::new();
+        let mut signals: Vec<SignalRecord> = Vec::new();
         let mut stale_skips = 0usize;
         let mut incomplete = 0usize;
         let mut jev_errors = 0usize;
@@ -580,7 +596,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 LatencyProfile::Empirical => self.config.latency_distribution.sample_ms(seq as u64),
                 _ => jev_latency,
             };
-            let (sig_c, lat_c, err_c, hash_c, sig_q, lat_q, err_q, hash_q) = self.evaluate_pair(
+            let (out_c, hash_c, json_c, out_q, hash_q, json_q) = self.evaluate_pair(
                 &features,
                 &poly,
                 candidate,
@@ -590,7 +606,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 seq as u64,
                 assumed_latency_ms,
             );
-            jev_errors += err_c.is_some() as usize + err_q.is_some() as usize;
+            jev_errors += out_c.error.is_some() as usize + out_q.error.is_some() as usize;
             // Latency: the response is usable at ts+jev_latency while the
             // market keeps printing. Two staleness gates, both in event
             // time: (1) end-to-end latency over budget; (2) sequence lag:
@@ -614,10 +630,13 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     self.config.run_id, self.config.pair_namespace, seq
                 )
             };
-            for (variant, sig, lat, err, sh) in [
-                ("CONTROL", &sig_c, lat_c, err_c.as_ref(), &hash_c),
-                ("QUANT_V1", &sig_q, lat_q, err_q.as_ref(), &hash_q),
+            for (variant, jev, sh, state_json) in [
+                ("CONTROL", &out_c, &hash_c, &json_c),
+                ("QUANT_V1", &out_q, &hash_q, &json_q),
             ] {
+                let sig = &jev.signal;
+                let lat = jev.latency_ms;
+                let err = jev.error.as_ref();
                 let usable_at = ts + lat as i64;
                 let seq_lag = future_mids
                     .iter()
@@ -751,10 +770,21 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     stale_skipped: stale,
                     incomplete_pair: err.is_some(),
                 });
+                signals.push(SignalRecord {
+                    pair_id: pair_id.clone(),
+                    variant: variant.to_owned(),
+                    market_id: market_id.clone(),
+                    state_hash: sh.clone(),
+                    state_json: state_json.clone(),
+                    signal: sig.clone(),
+                    jev_latency_ms: lat,
+                    live: jev.live,
+                });
             }
         }
         RunnerOutput {
             rows,
+            signals,
             jev_hits: self.cache.hits,
             jev_misses: self.cache.misses,
             stale_skips,

@@ -632,13 +632,14 @@ fn pair_ids_stay_unique_across_per_condition_calls() {
     let ids_b: Vec<&str> = b.rows.iter().map(|row| row.pair_id.as_str()).collect();
     assert!(ids_a.iter().all(|id| id.contains("cond-A")));
     assert!(ids_b.iter().all(|row| row.contains("cond-B")));
-    for id in ids_a.iter().chain(ids_b.iter()) {
-        assert_eq!(
-            ids_a.iter().filter(|x| *x == *id).count() + ids_b.iter().filter(|x| *x == *id).count(),
-            2,
-            "pair_id {id} must appear exactly twice (CONTROL + QUANT_V1)"
-        );
+    // Every pair_id appears exactly twice (CONTROL + QUANT_V1), never
+    // shared across the two calls.
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for row in a.rows.iter().chain(b.rows.iter()) {
+        *counts.entry(row.pair_id.as_str()).or_default() += 1;
     }
+    assert_eq!(counts.len(), 2);
+    assert!(counts.values().all(|n| *n == 2));
     // Within one pair the two rows share pair_id across variants.
     assert_eq!(a.rows[0].pair_id, a.rows[1].pair_id);
     assert_ne!(a.rows[0].pair_id, b.rows[0].pair_id);

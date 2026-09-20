@@ -17,6 +17,8 @@ pub struct JevCacheKey {
 pub struct CachedJev {
     pub signal_json: String,
     pub latency_ms: u64,
+    /// Whether the cached evaluation came from a live call (vs stub/assumed).
+    pub live: bool,
 }
 
 /// Reproducible in-memory Jev cache (persisted to JSON by the runner).
@@ -84,6 +86,7 @@ mod tests {
             CachedJev {
                 signal_json: "{}".to_owned(),
                 latency_ms: 100,
+                live: false,
             },
         );
         assert!(c.get(&key("a")).is_some());
@@ -98,6 +101,7 @@ mod tests {
             CachedJev {
                 signal_json: "{}".to_owned(),
                 latency_ms: 1,
+                live: false,
             },
         );
         let mut other_model = key("a");
