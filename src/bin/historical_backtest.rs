@@ -9,8 +9,8 @@ use jevtrader::replay::SyntheticItem;
 use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regimes};
 use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
-    Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
-    Split, StubJev, build_report, read_underlying_window, write_json, write_markdown,
+    ARMS, Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner,
+    RunnerOutput, Split, StubJev, build_report, read_underlying_window, write_json, write_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -127,9 +127,21 @@ fn bootstrap_items(n_pairs: usize) -> Vec<SyntheticItem> {
         } else {
             Fidelity::Proxy
         };
-        items.push((
-            t, bid, ask, spot, market_id, asset, horizon, split, fidelity, regime,
-        ));
+        items.push(SyntheticItem {
+            ts_ms: t,
+            book_bid: bid,
+            book_ask: ask,
+            spot,
+            perp: spot,
+            spot_flow: SyntheticItem::neutral_flow(),
+            poly_flow: SyntheticItem::neutral_flow(),
+            market_id,
+            asset,
+            horizon,
+            split,
+            fidelity,
+            regime,
+        });
         t += 5_000;
         i += 1;
     }
@@ -183,11 +195,11 @@ fn run_corpus<E: JevEvaluator>(
     if tape.is_empty() {
         return None;
     }
-    let underlying_path = format!("{corpus}/underlying_market_data.parquet");
-    // Group tape per condition. Underlying is read PER CONDITION below with
-    // read_underlying_window (time-bounded, thinned): the merged multi-week
-    // file holds 40M rows, so a global head-read would price April markets
-    // with December ticks and blow RAM.
+    let underlying_path = format!("{corpus}/underlying_all.parquet");
+    // Group tape per condition. Underlying (spot + perp legs) is read PER
+    // CONDITION below with read_underlying_window (time-bounded, thinned):
+    // the merged multi-week file holds ~100M rows, so a global head-read
+    // would price April markets with December ticks and blow RAM.
     let mut poly_by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
     for ev in tape {
         if let HistoricalEvent::PolyTrade { condition_id, .. } = &ev {
@@ -304,7 +316,7 @@ fn run_corpus<E: JevEvaluator>(
         // Per-condition pair cap: spreads the budget across buckets so one
         // long trajectory cannot consume the whole run. The SIGNAL ALPHA run
         // raises the cap (pre-registered) to reach 500-1000 pairs.
-        let remaining = config.max_pairs.saturating_sub(all_rows.len() / 2);
+        let remaining = config.max_pairs.saturating_sub(all_rows.len() / ARMS.len());
         if remaining == 0 {
             break;
         }
@@ -348,7 +360,7 @@ fn run_corpus<E: JevEvaluator>(
             .last()
             .map(HistoricalEvent::ts_ms)
             .unwrap_or(first_ts);
-        let und_stream: Vec<HistoricalEvent> = read_underlying_window(
+        let mut und_stream: Vec<HistoricalEvent> = read_underlying_window(
             &underlying_path,
             &meta.1,
             first_ts.saturating_sub(2 * 3_600_000),
@@ -357,6 +369,21 @@ fn run_corpus<E: JevEvaluator>(
             50_000,
         )
         .unwrap_or_default();
+        // Perp leg for the MICRO arm (same window, thinned identically).
+        // Missing perp coverage yields nothing; items then fall back to
+        // perp = spot (V1 behavior), never invented prices.
+        let perp_asset = format!("{}-PERP", meta.1);
+        und_stream.extend(
+            read_underlying_window(
+                &underlying_path,
+                &perp_asset,
+                first_ts.saturating_sub(2 * 3_600_000),
+                last_ts,
+                16,
+                50_000,
+            )
+            .unwrap_or_default(),
+        );
         let out = runner.run_events_by_condition(
             vec![poly_stream, und_stream],
             &[single_map[&condition].clone()],
@@ -425,7 +452,7 @@ fn execute<E: JevEvaluator>(
         None => {
             println!("corpus=SYNTHETIC-BOOTSTRAP (processed corpus absent)");
             let items = bootstrap_items(config.max_pairs);
-            let resolution_at_ms = items.last().map_or(0, |i| i.0) + 4 * 3_600_000;
+            let resolution_at_ms = items.last().map_or(0, |i| i.ts_ms) + 4 * 3_600_000;
             runner.run_synthetic(&items, resolution_at_ms)
         }
     }
@@ -491,7 +518,15 @@ fn main() {
         let evaluator = RealJev::new(api_key, Duration::from_millis(deadline_ms), max_jev_calls)
             .expect("RealJev requires TYPESAFE_API_KEY and max-jev-calls >= 1");
         let mut runner = ReplayRunner::new(config.clone(), evaluator);
-        let output = execute(&mut runner, &corpus, &config, exact_only, per_condition_cap, &condition_filter, stratified);
+        let output = execute(
+            &mut runner,
+            &corpus,
+            &config,
+            exact_only,
+            per_condition_cap,
+            &condition_filter,
+            stratified,
+        );
         println!(
             "jev_live_calls={} budget={}",
             runner.evaluator.calls, max_jev_calls
@@ -520,7 +555,15 @@ fn main() {
         output
     } else {
         let mut runner = ReplayRunner::new(config.clone(), StubJev::new(42));
-        execute(&mut runner, &corpus, &config, exact_only, per_condition_cap, &condition_filter, stratified)
+        execute(
+            &mut runner,
+            &corpus,
+            &config,
+            exact_only,
+            per_condition_cap,
+            &condition_filter,
+            stratified,
+        )
     };
 
     let json = write_json(&output.rows).expect("json renders");
@@ -535,10 +578,7 @@ fn main() {
         match serde_json::to_string_pretty(&output.signals) {
             Ok(sjson) => {
                 if fs::write(&signals_out, &sjson).is_ok() {
-                    println!(
-                        "signals_out n={} -> {signals_out}",
-                        output.signals.len()
-                    );
+                    println!("signals_out n={} -> {signals_out}", output.signals.len());
                 } else {
                     println!("signals_out WRITE FAILED {signals_out}");
                 }
@@ -551,31 +591,24 @@ fn main() {
     let md_path = format!("{}.md", out.trim_end_matches(".json"));
     let _ = fs::write(&md_path, &md);
 
-    // Console summary segmented by variant/asset/horizon (never global only).
-    // Signal drift (all usable evaluations) is the alpha readout; markouts
-    // are fill-conditional execution labels.
-    let mut n_c = 0;
-    let mut n_q = 0;
-    let mut mo_c = Vec::new();
-    let mut mo_q = Vec::new();
-    let mut drift_c = Vec::new();
-    let mut drift_q = Vec::new();
+    // Console summary per arm (never global only). Signal drift (all
+    // usable evaluations) is the alpha readout; markouts are
+    // fill-conditional execution labels.
+    let mut per_arm: Vec<(String, usize, Vec<f64>, Vec<f64>)> = ARMS
+        .iter()
+        .map(|a| (a.name.to_owned(), 0, Vec::new(), Vec::new()))
+        .collect();
     for r in &output.rows {
-        if r.variant == "CONTROL" {
-            n_c += 1;
+        if let Some(entry) = per_arm
+            .iter_mut()
+            .find(|(name, _, _, _)| *name == r.variant)
+        {
+            entry.1 += 1;
             if let Some(m) = r.markout_5s_pp {
-                mo_c.push(m);
+                entry.2.push(m);
             }
             if let Some(d) = r.drift_5s_pp {
-                drift_c.push(d);
-            }
-        } else {
-            n_q += 1;
-            if let Some(m) = r.markout_5s_pp {
-                mo_q.push(m);
-            }
-            if let Some(d) = r.drift_5s_pp {
-                drift_q.push(d);
+                entry.3.push(d);
             }
         }
     }
@@ -593,28 +626,27 @@ fn main() {
             v.iter().filter(|x| **x > 0.0).count() as f64 / v.len() as f64
         }
     };
+    let arm_line = |entry: &(String, usize, Vec<f64>, Vec<f64>)| {
+        format!(
+            "{} n={} mean_mo5s={:.4} drift_n={} drift_mean={:.4} drift_hit={:.3}",
+            entry.0,
+            entry.1,
+            mean(&entry.2),
+            entry.3.len(),
+            mean(&entry.3),
+            hit(&entry.3),
+        )
+    };
     println!(
-        "run={} rows={} CONTROL n={} mean_mo5s={:.4} | QUANT_V1 n={} mean_mo5s={:.4} | stale={} incomplete={} jev_hits={} jev_misses={} -> {}",
+        "run={} rows={} {} | stale={} incomplete={} jev_hits={} jev_misses={} -> {}",
         run_id,
         output.rows.len(),
-        n_c,
-        mean(&mo_c),
-        n_q,
-        mean(&mo_q),
+        per_arm.iter().map(arm_line).collect::<Vec<_>>().join(" | "),
         output.stale_skips,
         output.incomplete_pairs,
         output.jev_hits,
         output.jev_misses,
         out
-    );
-    println!(
-        "signal_drift_5s CONTROL n={} mean={:.4} hit={:.3} | QUANT_V1 n={} mean={:.4} hit={:.3}",
-        drift_c.len(),
-        mean(&drift_c),
-        hit(&drift_c),
-        drift_q.len(),
-        mean(&drift_q),
-        hit(&drift_q),
     );
     if real_jev {
         println!(

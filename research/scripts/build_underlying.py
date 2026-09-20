@@ -18,7 +18,7 @@ from common import (
 )
 
 ARCHIVE_RE = re.compile(
-    r"^(?P<symbol>[A-Z]+)-aggTrades-(?P<period>\d{4}-\d{2}(?:-\d{2})?)\.zip$"
+    r"^(?P<symbol>[A-Z]+)(?P<tag>-perp)?-aggTrades-(?P<period>\d{4}-\d{2}(?:-\d{2})?)\.zip$"
 )
 OUTPUT_SCHEMA = {
     "ts_ms": pl.Int64,
@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--tape", default=str(PROCESSED / "polymarket_trades.parquet"))
     ap.add_argument("--out", default=str(PROCESSED / "underlying_market_data.parquet"))
+    ap.add_argument(
+        "--market",
+        default="spot",
+        choices=["spot", "um"],
+        help="spot -> {SYM}-aggTrades-*.zip assets BTC/ETH; "
+        "um -> {SYM}-perp-aggTrades-*.zip assets BTC-PERP/ETH-PERP (futures)",
+    )
     return ap.parse_args()
 
 
@@ -127,9 +134,11 @@ def to_ms(raw: int) -> int:
     return v
 
 
-def parse_archive_period(path: Path, symbol: str) -> tuple[dt.date, dt.date] | None:
+def parse_archive_period(path: Path, symbol: str, tag: str) -> tuple | None:
     match = ARCHIVE_RE.fullmatch(path.name)
     if match is None or match.group("symbol") != symbol:
+        return None
+    if (match.group("tag") or "") != tag:
         return None
     period = match.group("period")
     try:
@@ -147,16 +156,16 @@ def parse_archive_period(path: Path, symbol: str) -> tuple[dt.date, dt.date] | N
         return None
 
 
-def agg_archives(symbol: str, lo_ms: int, hi_ms: int) -> list[Path]:
+def agg_archives(symbol: str, lo_ms: int, hi_ms: int, tag: str) -> list[Path]:
     lo_day = dt.datetime.fromtimestamp(lo_ms / 1000, tz=dt.timezone.utc).date()
     hi_day = dt.datetime.fromtimestamp((hi_ms - 1) / 1000, tz=dt.timezone.utc).date()
     paths: list[Path] = []
     try:
-        candidates = sorted((RAW / "binance").glob(f"{symbol}-aggTrades-*.zip"))
+        candidates = sorted((RAW / "binance").glob(f"{symbol}-*aggTrades-*.zip"))
     except OSError as exc:
         raise RuntimeError(f"glob failed: {exc}") from exc
     for path in candidates:
-        period = parse_archive_period(path, symbol)
+        period = parse_archive_period(path, symbol, tag)
         if period is None:
             continue
         start, end = period
@@ -165,7 +174,9 @@ def agg_archives(symbol: str, lo_ms: int, hi_ms: int) -> list[Path]:
     return paths
 
 
-def read_agg(path: str, lo_ms: int, hi_ms: int, asset: str) -> pl.DataFrame:
+def read_agg(
+    path: str, lo_ms: int, hi_ms: int, asset: str, instrument: str
+) -> pl.DataFrame:
     try:
         zf = zipfile.ZipFile(path)
     except Exception as exc:
@@ -177,20 +188,35 @@ def read_agg(path: str, lo_ms: int, hi_ms: int, asset: str) -> pl.DataFrame:
             print(f"GAP archive={path}: no files in zip")
             return pl.DataFrame()
         with zf.open(members[0]) as f:
-            df = pl.read_csv(
-                f,
-                has_header=False,
-                new_columns=[
-                    "agg_id",
-                    "price",
-                    "qty",
-                    "first_id",
-                    "last_id",
-                    "ts_raw",
-                    "buyer_maker",
-                    "best_match",
-                ],
-            )
+            try:
+                df = pl.read_csv(
+                    f,
+                    has_header=False,
+                    new_columns=[
+                        "agg_id",
+                        "price",
+                        "qty",
+                        "first_id",
+                        "last_id",
+                        "ts_raw",
+                        "buyer_maker",
+                        "best_match",
+                    ],
+                )
+            except Exception:
+                # Futures um files carry a header row and no best_match
+                # column (7 cols). Normalize by name to the same schema.
+                f.seek(0)
+                df = pl.read_csv(f, has_header=True).rename(
+                    {
+                        "agg_trade_id": "agg_id",
+                        "quantity": "qty",
+                        "first_trade_id": "first_id",
+                        "last_trade_id": "last_id",
+                        "transact_time": "ts_raw",
+                        "is_buyer_maker": "buyer_maker",
+                    }
+                )
     except Exception as exc:
         print(f"GAP collect={path}: {exc}")
         return pl.DataFrame()
@@ -225,7 +251,7 @@ def read_agg(path: str, lo_ms: int, hi_ms: int, asset: str) -> pl.DataFrame:
                 pl.col("ts_ms"),
                 pl.lit(asset).alias("asset"),
                 pl.lit("BINANCE").alias("venue"),
-                pl.lit("spot").alias("instrument"),
+                pl.lit(instrument).alias("instrument"),
                 pl.lit("aggTrade").alias("event_type"),
                 pl.col("price"),
                 pl.col("qty"),
@@ -279,11 +305,15 @@ def main() -> None:
     hi_day = dt.datetime.fromtimestamp((hi_ms - 1) / 1000, tz=dt.timezone.utc).date()
     frames = []
     symbol_coverage: dict[str, dict] = {}
-    for asset, sym in [("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")]:
-        paths = agg_archives(sym, lo_ms, hi_ms)
+    tag = "-perp" if args.market == "um" else ""
+    instrument = "perp" if args.market == "um" else "spot"
+    suffix = "-PERP" if args.market == "um" else ""
+    for base, sym in [("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")]:
+        asset = base + suffix
+        paths = agg_archives(sym, lo_ms, hi_ms, tag)
         symbol_frames = []
         for path in paths:
-            df = read_agg(str(path), lo_ms, hi_ms, asset)
+            df = read_agg(str(path), lo_ms, hi_ms, asset, instrument)
             if len(df) > 0:
                 symbol_frames.append(df)
         if symbol_frames:
@@ -344,7 +374,7 @@ def main() -> None:
     record_file(
         m,
         "binance-vision",
-        "underlying_market_data.parquet",
+        Path(args.out).name,
         args.out,
         [lo_day.isoformat(), hi_day.isoformat()],
         [iso_utc(lo_ms), iso_utc(hi_ms)],

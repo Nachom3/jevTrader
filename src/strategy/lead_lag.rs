@@ -53,6 +53,13 @@ pub struct LeadLagFeatures {
     pub ofi_5s: f64,
     pub book_imbalance: f64,
     pub aggressive_buy_ratio: f64,
+    // -- Order flow (Polymarket tape, V2 only; 0.0 in V1 states) --
+    // Tape trades are sparse, so only 5s aggregates are populated; 1s
+    // equivalents would be near-always zero and are omitted by design.
+    pub poly_ofi_5s: f64,
+    pub poly_aggressive_buy_ratio: f64,
+    pub poly_buy_vol_5s: f64,
+    pub poly_sell_vol_5s: f64,
     // -- Cross-exchange --
     pub binance_coinbase_diff_pct: f64,
     pub spot_perp_diff_pct: f64,

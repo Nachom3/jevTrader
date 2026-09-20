@@ -21,6 +21,11 @@ pub enum HistoricalEvent {
         price: f64,
         bid: Option<f64>,
         ask: Option<f64>,
+        /// Trade quantity for OFI/volume flow. None for quotes/legacy rows.
+        qty: Option<f64>,
+        /// Aggressor side of the trade (BUY = buyer-initiated). Drives
+        /// rolling OFI in V2; None for quotes and legacy rows.
+        aggressor: Option<String>,
         source: String,
     },
     PolyTop {

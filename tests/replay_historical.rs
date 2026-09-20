@@ -22,7 +22,7 @@ use jevtrader::replay::walkforward::WalkforwardWindow;
 use jevtrader::replay::{
     Fidelity, FillProfile, FillSimulator, HistoricalEvent, HistoricalSource, InMemorySource,
     JevEvaluator, JevOutcome, LatencyProfile, ReplayClock, ReplayConfig, ReplayRunner, Split,
-    StubJev, Synchronizer, as_of_backward, build_report,
+    StubJev, Synchronizer, SyntheticItem, as_of_backward, build_report,
 };
 use jevtrader::state::feature_builder::{
     ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
@@ -44,6 +44,34 @@ fn snapshot(bid: f64, ask: f64) -> MarketSnapshot {
     MarketSnapshot {
         book: book_at(bid, ask),
         stale: false,
+    }
+}
+
+/// Neutral synthetic item (V2 context = V1-equivalent: perp = spot, zero
+/// flows). Tests override fields (e.g. split) after construction.
+fn mk_item(
+    ts_ms: i64,
+    bid: f64,
+    ask: f64,
+    spot: f64,
+    market: &str,
+    asset: &str,
+    horizon: &str,
+) -> SyntheticItem {
+    SyntheticItem {
+        ts_ms,
+        book_bid: bid,
+        book_ask: ask,
+        spot,
+        perp: spot,
+        spot_flow: SyntheticItem::neutral_flow(),
+        poly_flow: SyntheticItem::neutral_flow(),
+        market_id: market.to_owned(),
+        asset: asset.to_owned(),
+        horizon: horizon.to_owned(),
+        split: Split::Exploration,
+        fidelity: Fidelity::Exact,
+        regime: "NORMAL_VOL-SIDEWAYS".to_owned(),
     }
 }
 
@@ -108,6 +136,8 @@ fn historical_timestamp_ordering_is_event_time() {
             price: 1.0,
             bid: None,
             ask: None,
+            qty: None,
+            aggressor: None,
             source: "t".to_owned(),
         },
     ];
@@ -180,79 +210,40 @@ fn control_quant_share_everything_but_quant() {
     let cfg = ReplayConfig::smoke("pair-test");
     assert_eq!(cfg.fill, FillProfile::Conservative);
     assert_eq!(cfg.latency, LatencyProfile::Base);
-    // Pairing invariant: one frozen feature set -> two variant states.
+    // Pairing invariant: one frozen feature set -> three arm states.
     let mut runner = ReplayRunner::new(cfg, StubJev::new(1));
+    let mut third = mk_item(11000, 0.42, 0.47, 102.0, "BTC-5m", "BTC", "5m");
+    third.split = Split::OutOfSample;
     let items = vec![
-        (
-            1000,
-            0.40,
-            0.45,
-            100.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            6000,
-            0.41,
-            0.46,
-            101.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            11000,
-            0.42,
-            0.47,
-            102.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::OutOfSample,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
+        mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m"),
+        mk_item(6000, 0.41, 0.46, 101.0, "BTC-5m", "BTC", "5m"),
+        third,
     ];
     let out = runner.run_synthetic(&items, 1_000_000);
-    // Rows come in CONTROL/QUANT pairs sharing pair_id.
+    // Rows come in CONTROL/MICRO_V2/MICRO_V2_QUANT triples sharing pair_id.
     assert!(!out.rows.is_empty());
-    assert_eq!(out.rows.len() % 2, 0);
-    for w in out.rows.chunks(2) {
+    assert_eq!(out.rows.len() % 3, 0);
+    for w in out.rows.chunks(3) {
         assert_eq!(w[0].pair_id, w[1].pair_id);
-        assert!(w.iter().any(|r| r.variant == "CONTROL"));
-        assert!(w.iter().any(|r| r.variant == "QUANT_V1"));
+        assert_eq!(w[1].pair_id, w[2].pair_id);
+        let mut variants: Vec<&str> = w.iter().map(|r| r.variant.as_str()).collect();
+        variants.sort_unstable();
+        assert_eq!(variants, ["CONTROL", "MICRO_V2", "MICRO_V2_QUANT"]);
         assert_ne!(w[0].state_hash, w[1].state_hash);
+        assert_ne!(w[1].state_hash, w[2].state_hash);
     }
 }
 
 #[test]
 fn healthy_skips_are_complete_but_jev_errors_are_incomplete() {
-    let item = (
-        1000,
-        0.40,
-        0.45,
-        100.0,
-        "BTC-5m".to_owned(),
-        "BTC".to_owned(),
-        "5m".to_owned(),
-        Split::Exploration,
-        Fidelity::Exact,
-        "NORMAL_VOL-SIDEWAYS".to_owned(),
-    );
+    let item = mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m");
 
     let mut healthy = ReplayRunner::new(
         ReplayConfig::smoke("healthy-skip"),
         FixedReplayJev { error: false },
     );
     let healthy_output = healthy.run_synthetic(std::slice::from_ref(&item), 1_000_000);
-    assert_eq!(healthy_output.rows.len(), 2);
+    assert_eq!(healthy_output.rows.len(), 3);
     assert!(healthy_output.rows.iter().all(|row| !row.quoted));
     assert!(healthy_output.rows.iter().all(|row| !row.incomplete_pair));
     assert_eq!(healthy_output.incomplete_pairs, 0);
@@ -268,9 +259,9 @@ fn healthy_skips_are_complete_but_jev_errors_are_incomplete() {
         FixedReplayJev { error: true },
     );
     let failing_output = failing.run_synthetic(&[item], 1_000_000);
-    assert_eq!(failing_output.rows.len(), 2);
+    assert_eq!(failing_output.rows.len(), 3);
     assert!(failing_output.rows.iter().all(|row| row.incomplete_pair));
-    assert_eq!(failing_output.jev_errors, 2);
+    assert_eq!(failing_output.jev_errors, 3);
     // RunnerOutput.incomplete_pairs is reserved for pairs with no rows.
     assert_eq!(failing_output.incomplete_pairs, 0);
 }
@@ -381,32 +372,11 @@ fn isolation_across_portfolios_markets_assets_horizons() {
     // Horizons and assets segment in reports, never merged silently.
     let cfg = ReplayConfig::smoke("seg-test");
     let mut runner = ReplayRunner::new(cfg, StubJev::new(9));
-    let items = vec![
-        (
-            1000,
-            0.40,
-            0.45,
-            100.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "R".to_owned(),
-        ),
-        (
-            6000,
-            0.40,
-            0.45,
-            100.0,
-            "ETH-1h".to_owned(),
-            "ETH".to_owned(),
-            "1h".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "R".to_owned(),
-        ),
-    ];
+    let mut eth_item = mk_item(6000, 0.40, 0.45, 100.0, "ETH-1h", "ETH", "1h");
+    eth_item.regime = "R".to_owned();
+    let mut btc_item = mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m");
+    btc_item.regime = "R".to_owned();
+    let items = vec![btc_item, eth_item];
     let out = runner.run_synthetic(&items, 999_999);
     let rep = build_report(&out.rows);
     assert!(!rep.is_empty());
@@ -431,6 +401,8 @@ fn manifest_reproducibility_and_incomplete_data() {
             price: 100.0,
             bid: None,
             ask: None,
+            qty: None,
+            aggressor: None,
             source: "t".to_owned(),
         })
         .collect();
@@ -452,42 +424,9 @@ fn manifest_reproducibility_and_incomplete_data() {
 #[test]
 fn empirical_latency_uses_sampled_distribution_deterministically() {
     let items = [
-        (
-            1000,
-            0.40,
-            0.45,
-            100.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            6000,
-            0.41,
-            0.46,
-            101.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            11000,
-            0.42,
-            0.47,
-            102.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
+        mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m"),
+        mk_item(6000, 0.41, 0.46, 101.0, "BTC-5m", "BTC", "5m"),
+        mk_item(11000, 0.42, 0.47, 102.0, "BTC-5m", "BTC", "5m"),
     ];
     let run_once = || {
         let mut cfg = ReplayConfig::smoke("empirical-lat");
@@ -498,7 +437,7 @@ fn empirical_latency_uses_sampled_distribution_deterministically() {
     };
     let first = run_once();
     let second = run_once();
-    assert_eq!(first.rows.len(), 6);
+    assert_eq!(first.rows.len(), 9);
     assert!(
         first
             .rows
@@ -522,61 +461,17 @@ fn signal_drift_recorded_for_all_usable_evaluations_including_skips() {
     // Rising mids: every healthy evaluation must carry forward drift,
     // even when the strategy SKIPs (no quote, no fill).
     let items = [
-        (
-            0,
-            0.39,
-            0.41,
-            100.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            6000,
-            0.41,
-            0.43,
-            101.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            11000,
-            0.43,
-            0.45,
-            102.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
-        (
-            21000,
-            0.45,
-            0.47,
-            103.0,
-            "BTC-5m".to_owned(),
-            "BTC".to_owned(),
-            "5m".to_owned(),
-            Split::Exploration,
-            Fidelity::Exact,
-            "NORMAL_VOL-SIDEWAYS".to_owned(),
-        ),
+        mk_item(0, 0.39, 0.41, 100.0, "BTC-5m", "BTC", "5m"),
+        mk_item(6000, 0.41, 0.43, 101.0, "BTC-5m", "BTC", "5m"),
+        mk_item(11000, 0.43, 0.45, 102.0, "BTC-5m", "BTC", "5m"),
+        mk_item(21000, 0.45, 0.47, 103.0, "BTC-5m", "BTC", "5m"),
     ];
     let mut healthy = ReplayRunner::new(
         ReplayConfig::smoke("drift-skip"),
         FixedReplayJev { error: false },
     );
     let out = healthy.run_synthetic(&items, 1_000_000);
-    assert_eq!(out.rows.len(), 8);
+    assert_eq!(out.rows.len(), 12);
     assert!(out.rows.iter().all(|row| !row.quoted));
     assert!(out.rows.iter().all(|row| !row.incomplete_pair));
     // SKIP rows carry no markouts (no fill) but must carry drift, except the
@@ -607,18 +502,7 @@ fn signal_drift_recorded_for_all_usable_evaluations_including_skips() {
 fn pair_ids_stay_unique_across_per_condition_calls() {
     // run_corpus replays one condition per call on a shared runner; without
     // a namespace, seq restarts at 0 and pair_ids collide across conditions.
-    let item = (
-        1000,
-        0.40,
-        0.45,
-        100.0,
-        "BTC-5m".to_owned(),
-        "BTC".to_owned(),
-        "5m".to_owned(),
-        Split::Exploration,
-        Fidelity::Exact,
-        "NORMAL_VOL-SIDEWAYS".to_owned(),
-    );
+    let item = mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m");
     let mut cfg = ReplayConfig::smoke("ns-run");
     cfg.max_pairs = 10;
     let mut runner = ReplayRunner::new(cfg, StubJev::new(7));
@@ -626,21 +510,59 @@ fn pair_ids_stay_unique_across_per_condition_calls() {
     let a = runner.run_synthetic(std::slice::from_ref(&item), 1_000_000);
     runner.config.pair_namespace = "cond-B".to_owned();
     let b = runner.run_synthetic(std::slice::from_ref(&item), 1_000_000);
-    assert_eq!(a.rows.len(), 2);
-    assert_eq!(b.rows.len(), 2);
+    assert_eq!(a.rows.len(), 3);
+    assert_eq!(b.rows.len(), 3);
     let ids_a: Vec<&str> = a.rows.iter().map(|row| row.pair_id.as_str()).collect();
     let ids_b: Vec<&str> = b.rows.iter().map(|row| row.pair_id.as_str()).collect();
     assert!(ids_a.iter().all(|id| id.contains("cond-A")));
     assert!(ids_b.iter().all(|row| row.contains("cond-B")));
-    // Every pair_id appears exactly twice (CONTROL + QUANT_V1), never
+    // Every pair_id appears exactly three times (one per arm), never
     // shared across the two calls.
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for row in a.rows.iter().chain(b.rows.iter()) {
         *counts.entry(row.pair_id.as_str()).or_default() += 1;
     }
     assert_eq!(counts.len(), 2);
-    assert!(counts.values().all(|n| *n == 2));
+    assert!(counts.values().all(|n| *n == 3));
     // Within one pair the two rows share pair_id across variants.
     assert_eq!(a.rows[0].pair_id, a.rows[1].pair_id);
     assert_ne!(a.rows[0].pair_id, b.rows[0].pair_id);
+}
+
+#[test]
+fn micro_arm_diverges_from_v1_given_real_microstructure() {
+    // With real micro context (perp != spot, nonzero flows), the MICRO arms
+    // must evaluate different states than CONTROL. With neutral context
+    // they still differ by contract/target (covered in pairing test).
+    let mut it = mk_item(1000, 0.40, 0.45, 100.0, "BTC-5m", "BTC", "5m");
+    it.perp = 101.5;
+    it.spot_flow = OrderFlowAggregates {
+        buy_vol_1s: 8.0,
+        sell_vol_1s: 2.0,
+        ofi_1s: 6.0,
+        ofi_5s: 20.0,
+        imbalance: 0.6,
+        aggressive_buy_ratio: 0.8,
+    };
+    it.poly_flow = OrderFlowAggregates {
+        buy_vol_1s: 5.0,
+        sell_vol_1s: 5.0,
+        ofi_1s: 0.0,
+        ofi_5s: 0.0,
+        imbalance: 0.0,
+        aggressive_buy_ratio: 0.5,
+    };
+    let mut runner = ReplayRunner::new(ReplayConfig::smoke("micro-diverge"), StubJev::new(3));
+    let out = runner.run_synthetic(std::slice::from_ref(&it), 1_000_000);
+    assert_eq!(out.rows.len(), 3);
+    assert_eq!(out.signals.len(), 3);
+    let hashes: Vec<&str> = out.rows.iter().map(|row| row.state_hash.as_str()).collect();
+    assert_ne!(hashes[0], hashes[1]);
+    assert_ne!(hashes[0], hashes[2]);
+    assert_ne!(hashes[1], hashes[2]);
+    // StubJev hashes state content, so distinct states yield distinct
+    // pseudo-signals: the arms genuinely see different states.
+    let ups: Vec<f64> = out.signals.iter().map(|s| s.signal.underreact_up).collect();
+    assert!(!(ups[0] == ups[1] && ups[1] == ups[2]));
+    assert!(out.signals.iter().all(|s| !s.live));
 }

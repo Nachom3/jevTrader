@@ -88,6 +88,8 @@ mod tests {
             price,
             bid: None,
             ask: None,
+            qty: None,
+            aggressor: None,
             source: "test".to_owned(),
         }
     }

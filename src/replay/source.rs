@@ -279,6 +279,8 @@ fn decode_batch(
                 price,
                 bid: batch_f64(batch, "bid", row),
                 ask: batch_f64(batch, "ask", row),
+                qty: batch_f64(batch, "qty", row),
+                aggressor: batch_str(batch, "aggressor_side", row),
                 source: format!("parquet:{path}"),
             });
         }
@@ -343,6 +345,8 @@ mod tests {
                 price: 100.0 + i as f64,
                 bid: None,
                 ask: None,
+                qty: None,
+                aggressor: None,
                 source: "test".to_owned(),
             })
             .collect();

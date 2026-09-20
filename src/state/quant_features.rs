@@ -245,6 +245,10 @@ mod tests {
             ofi_5s: 0.0,
             book_imbalance: 0.0,
             aggressive_buy_ratio: 0.0,
+            poly_ofi_5s: 0.0,
+            poly_aggressive_buy_ratio: 0.0,
+            poly_buy_vol_5s: 0.0,
+            poly_sell_vol_5s: 0.0,
             binance_coinbase_diff_pct: 0.0,
             spot_perp_diff_pct: 0.0,
         }

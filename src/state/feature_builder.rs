@@ -247,9 +247,40 @@ pub fn build_features_full(
         ofi_5s: finite_or_zero(order_flow.ofi_5s),
         book_imbalance: finite_or_zero(order_flow.imbalance),
         aggressive_buy_ratio: finite_or_zero(order_flow.aggressive_buy_ratio),
+        // Poly-tape flow is V2-only via build_features_micro; the full
+        // builder keeps 0.0 so V1 states stay byte-identical.
+        poly_ofi_5s: 0.0,
+        poly_aggressive_buy_ratio: 0.0,
+        poly_buy_vol_5s: 0.0,
+        poly_sell_vol_5s: 0.0,
         binance_coinbase_diff_pct: relative_difference(venues.binance, venues.coinbase),
         spot_perp_diff_pct: relative_difference(spot, venues.perp),
     }
+}
+
+/// V2 microstructure builder: real spot flow + real perp venues + Poly-tape
+/// flow on top of the frozen full builder.
+///
+/// The V1 path (build_features_full) is untouched so V1 states stay
+/// byte-identical; every V2 enrichment flows through this function only.
+/// `poly_flow` carries 5s Poly-tape aggregates (buy/sell vols, OFI, buy
+/// ratio); its 1s fields are ignored because tape trades are sparse.
+#[must_use]
+pub fn build_features_micro(
+    recent_ticks: &[ExternalTick],
+    context: &ResolutionContext,
+    contract: &ContractContext,
+    venues: VenueMicroprices,
+    order_flow: OrderFlowAggregates,
+    poly_flow: OrderFlowAggregates,
+) -> LeadLagFeatures {
+    let mut features = build_features_full(recent_ticks, context, contract, venues, order_flow);
+    features.poly_ofi_5s = finite_or_zero(poly_flow.ofi_5s);
+    features.poly_aggressive_buy_ratio = finite_or_zero(poly_flow.aggressive_buy_ratio);
+    // Caller places 5s Poly vols in the vol slots (documented at call site).
+    features.poly_buy_vol_5s = finite_or_zero(poly_flow.buy_vol_1s);
+    features.poly_sell_vol_5s = finite_or_zero(poly_flow.sell_vol_1s);
+    features
 }
 
 fn percentage_return(ticks: &[ExternalTick], end_ts: u64, horizon_ms: u64) -> Option<f64> {
@@ -519,6 +550,32 @@ mod tests {
         assert!((features.binance_coinbase_diff_pct - 1.0).abs() < 1e-12);
         let expected_spot_perp_diff = (100.0 / 102.0 - 1.0) * 100.0;
         assert!((features.spot_perp_diff_pct - expected_spot_perp_diff).abs() < 1e-12);
+    }
+
+    #[test]
+    fn micro_builder_maps_poly_flow_and_keeps_v1_frozen() {
+        use super::{ContractContext, build_features_full, build_features_micro};
+        let ticks = flat_ticks();
+        let ctx = ResolutionContext::new(100.0, 900, "Test source");
+        let contract = ContractContext::new("BTC", "5m", 300);
+        let poly_flow = OrderFlowAggregates {
+            buy_vol_1s: 7.0,
+            sell_vol_1s: 3.0,
+            ofi_1s: 0.0,
+            ofi_5s: 4.0,
+            imbalance: 0.0,
+            aggressive_buy_ratio: 0.7,
+        };
+        let micro = build_features_micro(&ticks, &ctx, &contract, venues(), flow(), poly_flow);
+        assert_eq!(micro.poly_ofi_5s, 4.0);
+        assert_eq!(micro.poly_aggressive_buy_ratio, 0.7);
+        assert_eq!(micro.poly_buy_vol_5s, 7.0);
+        assert_eq!(micro.poly_sell_vol_5s, 3.0);
+        assert_eq!(micro.asset_symbol, "BTC");
+        // V1 path untouched: poly fields stay zero.
+        let v1 = build_features_full(&ticks, &ctx, &contract, venues(), flow());
+        assert_eq!(v1.poly_ofi_5s, 0.0);
+        assert_eq!(v1.poly_aggressive_buy_ratio, 0.0);
     }
 
     #[test]

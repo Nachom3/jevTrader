@@ -17,8 +17,8 @@ use crate::jev::request::{V1Questions, V1State};
 use crate::jev::response::{TickDistribution, V1Signal};
 use crate::polymarket::OrderBook;
 use crate::state::feature_builder::{
-    ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
-    build_features_with_context,
+    ContractContext, ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
+    build_features_micro, build_features_with_context,
 };
 use crate::state::poly_history::PolyHistory;
 use crate::state::quant_features::build_quant;
@@ -57,19 +57,44 @@ pub trait JevEvaluator {
     ) -> JevOutcome;
 }
 
-/// One synthetic replay tick with market metadata.
-pub type SyntheticItem = (
-    i64,
-    f64,
-    f64,
-    f64,
-    String,
-    String,
-    String,
-    Split,
-    Fidelity,
-    String,
-);
+/// One replay observation with V2 microstructure context.
+///
+/// `spot`/`spot_flow` come from the spot leg, `perp` is the as-of perp price
+/// (falls back to `spot` when perp coverage is missing, i.e. V1 behavior),
+/// and `poly_flow` carries 5s Poly-tape aggregates (5s vols sit in the vol
+/// slots; 1s slots stay 0.0 on sparse tape). Synthetic/bootstrap paths fill
+/// V2 fields with neutral values (perp = spot, zero flows).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyntheticItem {
+    pub ts_ms: i64,
+    pub book_bid: f64,
+    pub book_ask: f64,
+    pub spot: f64,
+    pub perp: f64,
+    pub spot_flow: OrderFlowAggregates,
+    pub poly_flow: OrderFlowAggregates,
+    pub market_id: String,
+    pub asset: String,
+    pub horizon: String,
+    pub split: Split,
+    pub fidelity: Fidelity,
+    pub regime: String,
+}
+
+impl SyntheticItem {
+    /// Neutral V2 context for synthetic/bootstrap items (V1-equivalent).
+    #[must_use]
+    pub fn neutral_flow() -> OrderFlowAggregates {
+        OrderFlowAggregates {
+            buy_vol_1s: 0.0,
+            sell_vol_1s: 0.0,
+            ofi_1s: 0.0,
+            ofi_5s: 0.0,
+            imbalance: 0.0,
+            aggressive_buy_ratio: 0.5,
+        }
+    }
+}
 
 /// Deterministic stub: maps state_hash -> stable pseudo-signal (no network,
 /// no cost). Smoke-valid; never presented as alpha evidence.
@@ -327,6 +352,37 @@ pub struct SignalRecord {
     pub live: bool,
 }
 
+/// One replay arm: a named state variant evaluated on every snapshot.
+///
+/// CONTROL is the frozen V1 state (reference arm, byte-identical to v1).
+/// MICRO_V2 carries real microstructure (OFI/flow, perp, fixed distance).
+/// MICRO_V2_QUANT adds quant enrichment on the micro state (secondary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arm {
+    pub name: &'static str,
+    pub quant: bool,
+    pub micro: bool,
+}
+
+/// The evaluated arms, in row-emission order. Row counts divide by this.
+pub const ARMS: [Arm; 3] = [
+    Arm {
+        name: "CONTROL",
+        quant: false,
+        micro: false,
+    },
+    Arm {
+        name: "MICRO_V2",
+        quant: false,
+        micro: true,
+    },
+    Arm {
+        name: "MICRO_V2_QUANT",
+        quant: true,
+        micro: true,
+    },
+];
+
 /// Output of one replay run.
 #[derive(Debug)]
 pub struct RunnerOutput {
@@ -365,22 +421,17 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         }
     }
 
-    /// Runs the replay over pre-synchronized events with per-event market
-    /// metadata carried alongside. Each item is
-    /// `(ts_ms, book_bid, book_ask, spot, market_id, asset, horizon, split,
-    /// fidelity, regime)`.
+    /// Runs the replay over pre-synchronized rich items (V2 struct form).
     #[allow(clippy::too_many_arguments)]
-    /// Evaluates one frozen snapshot in both variants and returns
-    /// `(control_outcome, control_hash, control_state_json, quant_outcome,
-    /// quant_hash, quant_state_json)`. The state JSONs are the exact
-    /// evaluated payloads (already serialized for hashing); the diagnostic
-    /// sidecar persists them verbatim for offline analysis.
+    /// Evaluates one frozen snapshot for one arm and returns
+    /// `(outcome, state_hash, state_json)`. The state JSON is the exact
+    /// evaluated payload (already serialized for hashing); the diagnostic
+    /// sidecar persists it verbatim for offline analysis.
     /// Latencies are measured for live calls and assumed otherwise; the
     /// Jev cache stores complete signals keyed by state + questions +
     /// model + variant.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::type_complexity)]
-    fn evaluate_pair(
+    fn evaluate_arm(
         &mut self,
         features: &crate::strategy::lead_lag::LeadLagFeatures,
         poly: &crate::strategy::lead_lag::PolySnapshot,
@@ -389,61 +440,32 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         rules: &str,
         market_id: &str,
         seq: u64,
+        variant: &str,
+        quant: Option<crate::state::quant_features::QuantFeatures>,
         assumed_latency_ms: u64,
-    ) -> (JevOutcome, String, String, JevOutcome, String, String) {
-        let quant = build_quant(features, &self.config.quant.params);
-        let control_state = V1State::new(
+    ) -> (JevOutcome, String, String) {
+        let state = V1State::new(
             question,
             rules,
             features.clone(),
             poly.clone(),
-            None,
+            quant,
             candidate,
         );
-        let quant_state = V1State::new(
-            question,
-            rules,
-            features.clone(),
-            poly.clone(),
-            Some(quant),
-            candidate,
-        );
-        let control_json = serde_json::to_string(&control_state).unwrap_or_default();
-        let quant_json = serde_json::to_string(&quant_state).unwrap_or_default();
+        let state_json = serde_json::to_string(&state).unwrap_or_default();
         let questions_json =
             serde_json::to_string(&V1Questions::new(candidate)).unwrap_or_default();
         let qhash = hash_str(&questions_json);
-        let hash_c = hash_str(&control_json);
-        let hash_q = hash_str(&quant_json);
-        let key_c = JevCacheKey {
-            state_hash: hash_c.clone(),
-            questions_hash: qhash.clone(),
-            model: "jev-latest".to_owned(),
-            variant: "CONTROL".to_owned(),
-        };
-        let key_q = JevCacheKey {
-            state_hash: hash_q.clone(),
+        let hash = hash_str(&state_json);
+        let key = JevCacheKey {
+            state_hash: hash.clone(),
             questions_hash: qhash,
             model: "jev-latest".to_owned(),
-            variant: "QUANT_V1".to_owned(),
+            variant: variant.to_owned(),
         };
-        let out_c = self.cached_or_evaluate(
-            &key_c,
-            &control_state,
-            market_id,
-            seq,
-            "CONTROL",
-            assumed_latency_ms,
-        );
-        let out_q = self.cached_or_evaluate(
-            &key_q,
-            &quant_state,
-            market_id,
-            seq,
-            "QUANT_V1",
-            assumed_latency_ms,
-        );
-        (out_c, hash_c, control_json, out_q, hash_q, quant_json)
+        let outcome =
+            self.cached_or_evaluate(&key, &state, market_id, seq, variant, assumed_latency_ms);
+        (outcome, hash, state_json)
     }
 
     /// Cache lookup with evaluator fallback; stores complete signals.
@@ -488,23 +510,33 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         items: &[SyntheticItem],
         resolution_at_ms: i64,
     ) -> RunnerOutput {
-        self.run_synthetic_with(items, resolution_at_ms, &std::collections::HashMap::new())
+        self.run_synthetic_with(
+            items,
+            resolution_at_ms,
+            &std::collections::HashMap::new(),
+            &[],
+        )
     }
 
-    /// Replay with per-market questions (`market_id` -> `(question, rules)`).
-    /// Missing entries fall back to explicitly synthetic placeholders.
+    /// Replay with per-market questions (`market_id` -> `(question, rules)`)
+    /// and an optional dense underlying history for the MICRO arm.
+    ///
+    /// `dense_ticks` (oldest-first) feeds MICRO return/vol windows; the V1
+    /// arm always uses the legacy item-paced window. Synthetic callers pass
+    /// an empty slice (MICRO rows go degenerate-SKIP there by design).
     pub fn run_synthetic_with(
         &mut self,
         items: &[SyntheticItem],
         resolution_at_ms: i64,
         questions: &std::collections::HashMap<String, (String, String)>,
+        dense_ticks: &[ExternalTick],
     ) -> RunnerOutput {
         let mut rows = Vec::new();
         let mut signals: Vec<SignalRecord> = Vec::new();
         let mut stale_skips = 0usize;
         let mut incomplete = 0usize;
         let mut jev_errors = 0usize;
-        let mut clock = ReplayClock::new(items.first().map_or(0, |i| i.0));
+        let mut clock = ReplayClock::new(items.first().map_or(0, |i| i.ts_ms));
         let mut poly_hist = PolyHistory::new(1024);
         let mut underlying: Vec<(i64, f64)> = Vec::new();
         let mut mids: Vec<(i64, f64)> = Vec::new();
@@ -512,24 +544,32 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         // historical. Fills and markouts are post-facto LABELS evaluated
         // against later prints; the quote DECISION only ever uses history
         // accumulated through T (underlying, poly_hist, mids above).
-        let future_mids: Vec<(i64, f64)> =
-            items.iter().map(|it| (it.0, (it.1 + it.2) / 2.0)).collect();
+        let future_mids: Vec<(i64, f64)> = items
+            .iter()
+            .map(|it| (it.ts_ms, (it.book_bid + it.book_ask) / 2.0))
+            .collect();
         let markout_tracker = MarkoutTracker::new();
         let _ = markout_tracker;
         let jev_latency = self.config.latency.jev_latency_ms();
         let exec_latency = ExecutionLatency::new(self.config.latency.submit_latency_ms());
+        // Stream-open spot: the MICRO distance reference (V2). The V1 arm
+        // keeps target = current spot (frozen legacy behavior).
+        let stream_open = items.first().map(|i| i.spot).unwrap_or(0.0);
 
         for (seq, it) in items.iter().enumerate() {
-            if rows.len() / 2 >= self.config.max_pairs {
+            if rows.len() / ARMS.len() >= self.config.max_pairs {
                 break;
             }
-            let (ts, bid, ask, spot, market_id, asset, horizon, split, fidelity, regime) = it;
-            let ts = *ts;
+            let ts = it.ts_ms;
+            let (bid, ask, spot) = (it.book_bid, it.book_ask, it.spot);
+            let (market_id, asset, horizon, regime) =
+                (&it.market_id, &it.asset, &it.horizon, &it.regime);
+            let (split, fidelity) = (it.split, it.fidelity);
             if clock.advance_to(ts).is_err() {
                 incomplete += 1;
                 continue;
             }
-            underlying.push((ts, *spot));
+            underlying.push((ts, spot));
             let mid = (bid + ask) / 2.0;
             mids.push((ts, mid));
             poly_hist.push(ts.max(0) as u64, PriceTicks::from_f64(mid.clamp(0.0, 1.0)));
@@ -546,14 +586,14 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 })
                 .collect();
             let ctx = ResolutionContext::new(
-                *spot,
+                spot,
                 clock.time_remaining_secs(resolution_at_ms),
                 "binance-replay".to_owned(),
             );
             let venues = VenueMicroprices {
-                binance: *spot,
-                coinbase: *spot,
-                perp: *spot,
+                binance: spot,
+                coinbase: spot,
+                perp: spot,
                 perp_basis_pct: 0.0,
             };
             let flow = OrderFlowAggregates {
@@ -565,6 +605,42 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 aggressive_buy_ratio: 0.5,
             };
             let features = build_features_with_context(&ticks, &ctx, venues, flow);
+
+            // MICRO inputs (V2): dense history window, stream-open distance
+            // reference, real perp venues, real spot+poly flow, real contract.
+            // V1 names above stay frozen and byte-identical to v1.
+            let dense_end = dense_ticks.partition_point(|t| t.ts_ms <= ts.max(0) as u64);
+            let dense_start = dense_end.saturating_sub(3600);
+            let ticks_micro: &[ExternalTick] = if dense_ticks.is_empty() {
+                &ticks
+            } else {
+                &dense_ticks[dense_start..dense_end]
+            };
+            let ctx_micro = ResolutionContext::new(
+                stream_open,
+                clock.time_remaining_secs(resolution_at_ms),
+                "binance-replay".to_owned(),
+            );
+            let basis = if spot > 0.0 {
+                (it.perp - spot) / spot * 100.0
+            } else {
+                0.0
+            };
+            let venues_micro = VenueMicroprices {
+                binance: spot,
+                coinbase: spot,
+                perp: it.perp,
+                perp_basis_pct: basis,
+            };
+            let contract_micro = ContractContext::new(asset, horizon, horizon_secs(horizon));
+            let features_micro = build_features_micro(
+                ticks_micro,
+                &ctx_micro,
+                &contract_micro,
+                venues_micro,
+                it.spot_flow,
+                it.poly_flow,
+            );
 
             // Candidate maker price from the CURRENT book (event time).
             let mut book = OrderBook::default();
@@ -596,17 +672,36 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 LatencyProfile::Empirical => self.config.latency_distribution.sample_ms(seq as u64),
                 _ => jev_latency,
             };
-            let (out_c, hash_c, json_c, out_q, hash_q, json_q) = self.evaluate_pair(
-                &features,
-                &poly,
-                candidate,
-                &question,
-                &rules,
-                market_id,
-                seq as u64,
-                assumed_latency_ms,
-            );
-            jev_errors += out_c.error.is_some() as usize + out_q.error.is_some() as usize;
+            let mut arm_results = Vec::with_capacity(ARMS.len());
+            for arm in ARMS {
+                let (feat, quant) = if arm.micro {
+                    (
+                        &features_micro,
+                        arm.quant
+                            .then(|| build_quant(&features_micro, &self.config.quant.params)),
+                    )
+                } else {
+                    (
+                        &features,
+                        arm.quant
+                            .then(|| build_quant(&features, &self.config.quant.params)),
+                    )
+                };
+                let (outcome, hash, json) = self.evaluate_arm(
+                    feat,
+                    &poly,
+                    candidate,
+                    &question,
+                    &rules,
+                    market_id,
+                    seq as u64,
+                    arm.name,
+                    quant,
+                    assumed_latency_ms,
+                );
+                jev_errors += outcome.error.is_some() as usize;
+                arm_results.push((arm.name, outcome, hash, json));
+            }
             // Latency: the response is usable at ts+jev_latency while the
             // market keeps printing. Two staleness gates, both in event
             // time: (1) end-to-end latency over budget; (2) sequence lag:
@@ -630,10 +725,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     self.config.run_id, self.config.pair_namespace, seq
                 )
             };
-            for (variant, jev, sh, state_json) in [
-                ("CONTROL", &out_c, &hash_c, &json_c),
-                ("QUANT_V1", &out_q, &hash_q, &json_q),
-            ] {
+            for (variant, jev, sh, state_json) in arm_results {
                 let sig = &jev.signal;
                 let lat = jev.latency_ms;
                 let err = jev.error.as_ref();
@@ -848,12 +940,45 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         let mut books: std::collections::HashMap<usize, (f64, f64)> =
             std::collections::HashMap::new();
         let mut spots: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+        // Perp as-of prices keyed by BASE asset ("BTC" for "BTC-PERP" ticks).
+        let mut perp_spots: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+        // Rolling signed trade flow: (ts_ms, is_buy, qty), pruned to 60s.
+        let mut spot_flow: std::collections::HashMap<String, VecDequeFlow> =
+            std::collections::HashMap::new();
+        let mut poly_flow: std::collections::HashMap<String, VecDequeFlow> =
+            std::collections::HashMap::new();
+        // Dense spot-leg history (oldest-first) for MICRO return/vol windows.
+        let mut dense: Vec<ExternalTick> = Vec::new();
         let mut items: Vec<SyntheticItem> = Vec::new();
         let mut skipped_unmatched = 0usize;
         for (si, ev) in &tagged {
             match ev {
-                HistoricalEvent::UnderlyingTick { asset, price, .. } => {
-                    spots.insert(asset.clone(), *price);
+                HistoricalEvent::UnderlyingTick {
+                    asset,
+                    price,
+                    qty,
+                    aggressor,
+                    ..
+                } => {
+                    if let Some(base) = asset.strip_suffix("-PERP") {
+                        perp_spots.insert(base.to_owned(), *price);
+                    } else {
+                        spots.insert(asset.clone(), *price);
+                        if let Some(is_buy) = trade_side(aggressor) {
+                            push_flow(
+                                &mut spot_flow,
+                                asset,
+                                ev.ts_ms(),
+                                is_buy,
+                                qty.unwrap_or(0.0),
+                            );
+                        }
+                        dense.push(ExternalTick {
+                            price: *price,
+                            ts_ms: ev.ts_ms().max(0) as u64,
+                        });
+                    }
                 }
                 HistoricalEvent::PolyTop {
                     best_bid,
@@ -868,23 +993,23 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                         continue;
                     };
                     let (bid, ask) = books[si];
-                    let spot = spots.get(&meta.1).copied().unwrap_or(100.0);
-                    items.push((
+                    items.push(emit_item(
                         ev.ts_ms(),
                         bid,
                         ask,
-                        spot,
-                        meta.0.clone(),
-                        meta.1.clone(),
-                        meta.2.clone(),
-                        meta.3,
-                        meta.4,
-                        meta.5.clone(),
+                        &spots,
+                        &perp_spots,
+                        &mut spot_flow,
+                        &mut poly_flow,
+                        condition_id,
+                        &meta,
                     ));
                 }
                 HistoricalEvent::PolyTrade {
                     condition_id,
                     price,
+                    size,
+                    aggressor,
                     ..
                 } => {
                     let bid = (price - 0.01).clamp(0.0, 1.0);
@@ -895,18 +1020,19 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                         skipped_unmatched += 1;
                         continue;
                     };
-                    let spot = spots.get(&meta.1).copied().unwrap_or(100.0);
-                    items.push((
+                    if let Some(is_buy) = trade_side(aggressor) {
+                        push_flow(&mut poly_flow, condition_id, ev.ts_ms(), is_buy, *size);
+                    }
+                    items.push(emit_item(
                         ev.ts_ms(),
                         bid,
                         ask,
-                        spot,
-                        meta.0.clone(),
-                        meta.1.clone(),
-                        meta.2.clone(),
-                        meta.3,
-                        meta.4,
-                        meta.5.clone(),
+                        &spots,
+                        &perp_spots,
+                        &mut spot_flow,
+                        &mut poly_flow,
+                        condition_id,
+                        &meta,
                     ));
                 }
             }
@@ -917,9 +1043,12 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         let _ = skipped_unmatched;
         // Resolution follows the market horizon carried by the items
         // (first item wins; per-condition runs carry a single horizon).
-        let horizon_secs = items.first().map(|i| horizon_secs(&i.6)).unwrap_or(300);
-        let resolution_at_ms = items.last().map_or(0, |i| i.0) + horizon_secs as i64 * 1000;
-        self.run_synthetic_with(&items, resolution_at_ms, questions)
+        let horizon_secs = items
+            .first()
+            .map(|i| horizon_secs(&i.horizon))
+            .unwrap_or(300);
+        let resolution_at_ms = items.last().map_or(0, |i| i.ts_ms) + horizon_secs as i64 * 1000;
+        self.run_synthetic_with(&items, resolution_at_ms, questions, &dense)
     }
 }
 
@@ -939,6 +1068,113 @@ fn event_rank(ev: &HistoricalEvent) -> u8 {
         HistoricalEvent::UnderlyingTick { .. } => 0,
         HistoricalEvent::PolyTop { .. } => 1,
         HistoricalEvent::PolyTrade { .. } => 2,
+    }
+}
+
+/// Rolling signed trade flow entries: (ts_ms, is_buy, qty).
+type VecDequeFlow = std::collections::VecDeque<(i64, bool, f64)>;
+
+/// Maps a recorded aggressor side to a buy flag. Verified tape/underlying
+/// domains are exactly BUY/SELL; anything else is skipped, never invented.
+fn trade_side(aggressor: &Option<String>) -> Option<bool> {
+    match aggressor.as_deref() {
+        Some("BUY") => Some(true),
+        Some("SELL") => Some(false),
+        _ => None,
+    }
+}
+
+/// Pushes one signed trade into the keyed rolling deque, pruning beyond 60s.
+fn push_flow(
+    flows: &mut std::collections::HashMap<String, VecDequeFlow>,
+    key: &str,
+    ts_ms: i64,
+    is_buy: bool,
+    qty: f64,
+) {
+    let deque = flows.entry(key.to_owned()).or_default();
+    deque.push_back((ts_ms, is_buy, qty.max(0.0)));
+    while deque.front().is_some_and(|(t, _, _)| *t < ts_ms - 60_000) {
+        deque.pop_front();
+    }
+}
+
+/// Signed volume snapshot over the trailing window: (buy_vol, sell_vol).
+fn window_vols(deque: Option<&VecDequeFlow>, now_ms: i64, window_ms: i64) -> (f64, f64) {
+    let Some(deque) = deque else {
+        return (0.0, 0.0);
+    };
+    let mut buy = 0.0;
+    let mut sell = 0.0;
+    for (t, is_buy, qty) in deque.iter().rev() {
+        if *t < now_ms - window_ms {
+            break;
+        }
+        if *is_buy {
+            buy += qty;
+        } else {
+            sell += qty;
+        }
+    }
+    (buy, sell)
+}
+
+/// Builds one rich item at a poly event: as-of spot/perp plus rolling flow
+/// snapshots. Perp falls back to spot (V1 behavior) when uncovered. Poly 5s
+/// vols sit in the vol slots (see build_features_micro).
+#[allow(clippy::too_many_arguments)]
+fn emit_item(
+    ts_ms: i64,
+    bid: f64,
+    ask: f64,
+    spots: &std::collections::HashMap<String, f64>,
+    perp_spots: &std::collections::HashMap<String, f64>,
+    spot_flow: &mut std::collections::HashMap<String, VecDequeFlow>,
+    poly_flow: &mut std::collections::HashMap<String, VecDequeFlow>,
+    condition_id: &str,
+    meta: &(String, String, String, Split, Fidelity, String),
+) -> SyntheticItem {
+    let spot = spots.get(&meta.1).copied().unwrap_or(100.0);
+    let perp = perp_spots.get(&meta.1).copied().unwrap_or(spot);
+    let (buy1, sell1) = window_vols(spot_flow.get(&meta.1), ts_ms, 1_000);
+    let (buy5, sell5) = window_vols(spot_flow.get(&meta.1), ts_ms, 5_000);
+    let total5 = buy5 + sell5;
+    let spot_flow_snap = OrderFlowAggregates {
+        buy_vol_1s: buy1,
+        sell_vol_1s: sell1,
+        ofi_1s: buy1 - sell1,
+        ofi_5s: buy5 - sell5,
+        imbalance: if total5 > 0.0 {
+            (buy5 - sell5) / total5
+        } else {
+            0.0
+        },
+        aggressive_buy_ratio: if total5 > 0.0 { buy5 / total5 } else { 0.5 },
+    };
+    let (pbuy5, psell5) = window_vols(poly_flow.get(condition_id), ts_ms, 5_000);
+    let ptotal = pbuy5 + psell5;
+    let poly_flow_snap = OrderFlowAggregates {
+        buy_vol_1s: pbuy5,
+        sell_vol_1s: psell5,
+        ofi_1s: 0.0,
+        ofi_5s: pbuy5 - psell5,
+        imbalance: 0.0,
+        aggressive_buy_ratio: if ptotal > 0.0 { pbuy5 / ptotal } else { 0.5 },
+    };
+    SyntheticItem {
+        ts_ms,
+        book_bid: bid,
+        book_ask: ask,
+        spot,
+        perp,
+        spot_flow: spot_flow_snap,
+        poly_flow: poly_flow_snap,
+        market_id: meta.0.clone(),
+        asset: meta.1.clone(),
+        horizon: meta.2.clone(),
+        split: meta.3,
+        fidelity: meta.4,
+        regime: meta.5.clone(),
     }
 }
 
