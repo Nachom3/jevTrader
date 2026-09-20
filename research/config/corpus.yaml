@@ -48,6 +48,8 @@ timeseventeen:
   max_monthly_partitions: 6
 
 # Underlying (Binance mandatory; Coinbase/Deribit adapters prepared)
+# aggTrades use the same UTC interval as polymarket_trades.parquet.
+# Monthly 1m is regime/long-vol context only.
 underlying:
   venues: [BINANCE]
   # expand to BINANCE, COINBASE, DERIBIT when data exists
