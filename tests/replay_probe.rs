@@ -3,7 +3,8 @@ use std::fs::File;
 
 use arrow::array::{
     Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
-    StringArray, UInt32Array, UInt64Array,
+    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+    TimestampNanosecondArray, TimestampSecondArray, UInt32Array, UInt64Array,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -74,7 +75,59 @@ fn array_text(array: &dyn Array, row: usize) -> Option<String> {
     if let Some(values) = array.as_any().downcast_ref::<BooleanArray>() {
         return Some(values.value(row).to_string());
     }
+    if let Some(values) = array.as_any().downcast_ref::<TimestampNanosecondArray>() {
+        return Some(values.value(row).to_string());
+    }
+    if let Some(values) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+        return Some(values.value(row).to_string());
+    }
+    if let Some(values) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
+        return Some(values.value(row).to_string());
+    }
+    if let Some(values) = array.as_any().downcast_ref::<TimestampSecondArray>() {
+        return Some(values.value(row).to_string());
+    }
     None
+}
+
+#[test]
+fn resolution_ts_presence_lists_timestamped_conditions() {
+    // Which tape conditions carry a real resolved_ts (Exact time) vs NaT.
+    // The live binary maps only timestamped ones until the split-provenance
+    // fix lands; pilot conditions must come from the `has_ts` list.
+    let mut trade_counts: HashMap<String, usize> = HashMap::new();
+    for row in read_rows(TRADE_FILE) {
+        *trade_counts.entry(row["condition_id"].clone()).or_insert(0) += 1;
+    }
+    let mut with_ts: Vec<(String, String, usize)> = Vec::new();
+    let mut without_ts = 0usize;
+    for row in read_rows(RESOLUTION_FILE) {
+        let condition_id = row["condition_id"].clone();
+        let has_ts = row
+            .get("resolved_ts")
+            .is_some_and(|v| v != "<null>" && v != "0");
+        if has_ts {
+            with_ts.push((
+                condition_id.clone(),
+                row.get("winning_outcome").cloned().unwrap_or_default(),
+                trade_counts.get(&condition_id).copied().unwrap_or(0),
+            ));
+        } else {
+            without_ts += 1;
+        }
+    }
+    with_ts.sort_by(|a, b| b.2.cmp(&a.2));
+    eprintln!(
+        "[replay_probe] with_ts={} without_ts={}",
+        with_ts.len(),
+        without_ts
+    );
+    for (condition_id, outcome, count) in with_ts.into_iter().take(8) {
+        eprintln!(
+            "[replay_probe] ts_condition={} outcome={} tape_rows={}",
+            condition_id, outcome, count
+        );
+    }
 }
 
 #[test]
