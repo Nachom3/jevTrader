@@ -11,6 +11,7 @@
 //! `execution::markout`.
 
 pub mod clock;
+pub mod exits;
 pub mod fills;
 pub mod jev_cache;
 pub mod ledger;
@@ -24,6 +25,10 @@ pub mod types;
 pub mod walkforward;
 
 pub use clock::ReplayClock;
+pub use exits::{
+    ExitPolicy, HedgeQuote, MergeResult, hedge_quote, merge_pair, settle_hedge_pair,
+    settle_resolution, should_hedge_profit,
+};
 pub use fills::{ExecutionLatency, FillOutcome, FillSimulator, RestingOrder};
 pub use jev_cache::JevCache;
 pub use ledger::{ExitType, Side, TradeEpisode};
