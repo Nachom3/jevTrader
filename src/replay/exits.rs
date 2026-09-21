@@ -102,6 +102,11 @@ pub fn hedge_quote(entry: &TradeEpisode, opposite_price: f64) -> Result<HedgeQuo
 /// according to the supplied outcome; their terminal values sum to the pair's
 /// `$1` per-share value, so the pair PnL remains the same locked amount
 /// (invariants 6/7). Invalid or incomplete episodes are left untouched.
+///
+/// This function keeps its historical unit-returning signature for existing
+/// replay callers. Any invalid temporal ordering or ledger state is a
+/// documented no-op, and successful settlement assigns one shared
+/// `hedge_pair_id` to both legs.
 pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
     let Ok((entry_fill_ts, entry_fill_price, entry_qty)) = filled_values(entry) else {
         return;
@@ -110,6 +115,12 @@ pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
         return;
     };
 
+    if entry_fill_ts > hedge_fill_ts
+        || entry_fill_ts < entry.order_arrival_ts_ms
+        || hedge_fill_ts < hedge.order_arrival_ts_ms
+    {
+        return;
+    }
     if !matches!(
         (entry.side, hedge.side),
         (Side::BuyYes, Side::BuyNo) | (Side::BuyNo, Side::BuyYes)
@@ -145,6 +156,9 @@ pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
 
     settled_entry.exit_type = ExitType::Hedge;
     settled_hedge.exit_type = ExitType::Hedge;
+    let hedge_pair_id = format!("hedge:{}", entry.episode_id);
+    settled_entry.hedge_pair_id = Some(hedge_pair_id.clone());
+    settled_hedge.hedge_pair_id = Some(hedge_pair_id);
     settled_entry.gross_pnl_usd = entry_qty * (entry_exit_price - entry_fill_price);
     settled_hedge.gross_pnl_usd = 0.0;
     *entry = settled_entry;

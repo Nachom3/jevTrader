@@ -75,6 +75,24 @@ pub struct TradeEpisode {
     /// Evidence lineage for the resolution label (`exact` or `proxy`).
     #[serde(default)]
     pub resolution_provenance: Option<String>,
+    /// Fill simulator profile used to produce the fill, set by the replay runner.
+    #[serde(default)]
+    pub fill_profile: Option<String>,
+    /// Whether the recorded fill was attributed to a maker order.
+    #[serde(default)]
+    pub is_maker: Option<bool>,
+    /// Fee regime used for the principal accounting view.
+    #[serde(default)]
+    pub fee_regime: Option<String>,
+    /// Shared identifier for the two legs of a settled hedge pair.
+    #[serde(default)]
+    pub hedge_pair_id: Option<String>,
+    /// Prompt version used for the Jev evaluation, set by the replay runner.
+    #[serde(default)]
+    pub prompt_version: Option<String>,
+    /// Jev model used for the evaluation, set by the replay runner.
+    #[serde(default)]
+    pub jev_model: Option<String>,
     #[serde(default)]
     pub exit_submit_latency_ms: u64,
     pub gross_pnl_usd: f64,
@@ -190,6 +208,12 @@ impl TradeEpisode {
             resolution_at_ms: None,
             resolution_outcome: None,
             resolution_provenance: None,
+            fill_profile: None,
+            is_maker: None,
+            fee_regime: None,
+            hedge_pair_id: None,
+            prompt_version: None,
+            jev_model: None,
             exit_submit_latency_ms,
             gross_pnl_usd: 0.0,
             fees_usd: 0.0,
@@ -229,18 +253,62 @@ impl TradeEpisode {
     }
 
     /// Records a fill after the order has arrived in replay event time.
+    ///
+    /// A fill is intentionally strict and non-idempotent: applying a second
+    /// fill is an error even when all values match. Replays must represent one
+    /// ledger episode with one fill, so duplicate upstream events cannot be
+    /// silently collapsed.
     pub fn apply_fill(&mut self, ts_ms: i64, price: f64, qty: f64) -> Result<(), String> {
+        if !price.is_finite() || price <= 0.0 {
+            return Err("fill price must be finite and greater than zero".to_owned());
+        }
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err("fill quantity must be finite and greater than zero".to_owned());
+        }
         if ts_ms < self.order_arrival_ts_ms {
             return Err(format!(
                 "fill timestamp {ts_ms} precedes order arrival {}",
                 self.order_arrival_ts_ms
             ));
         }
+        if self.fill_ts_ms.is_some() || self.fill_price.is_some() || self.fill_qty.is_some() {
+            return Err("fill has already been applied to this episode".to_owned());
+        }
 
         self.fill_ts_ms = Some(ts_ms);
         self.fill_price = Some(price);
         self.fill_qty = Some(qty);
         Ok(())
+    }
+
+    /// Records the fill simulator profile used for this episode.
+    pub fn set_fill_profile(&mut self, fill_profile: impl Into<String>) {
+        self.fill_profile = Some(fill_profile.into());
+    }
+
+    /// Records whether the fill was attributed to a maker order.
+    pub fn set_is_maker(&mut self, is_maker: bool) {
+        self.is_maker = Some(is_maker);
+    }
+
+    /// Records the fee regime used for the principal accounting view.
+    pub fn set_fee_regime(&mut self, fee_regime: impl Into<String>) {
+        self.fee_regime = Some(fee_regime.into());
+    }
+
+    /// Records the shared identifier for a hedge pair.
+    pub fn set_hedge_pair_id(&mut self, hedge_pair_id: impl Into<String>) {
+        self.hedge_pair_id = Some(hedge_pair_id.into());
+    }
+
+    /// Records the Jev prompt version used by the replay runner.
+    pub fn set_prompt_version(&mut self, prompt_version: impl Into<String>) {
+        self.prompt_version = Some(prompt_version.into());
+    }
+
+    /// Records the Jev model used by the replay runner.
+    pub fn set_jev_model(&mut self, jev_model: impl Into<String>) {
+        self.jev_model = Some(jev_model.into());
     }
 
     /// Requests an exit and computes its event-time arrival timestamp.

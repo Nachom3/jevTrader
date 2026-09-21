@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS signal_markouts (
 CREATE TABLE IF NOT EXISTS trade_episodes (
   signal_ts_ms TIMESTAMP,
   episode_id SYMBOL CAPACITY 4096 NOCACHE,
+  -- strategy_version: version of the strategy that created the episode.
   strategy_version SYMBOL CAPACITY 256,
   market SYMBOL CAPACITY 4096 NOCACHE,
   asset SYMBOL CAPACITY 256,
@@ -304,5 +305,17 @@ CREATE TABLE IF NOT EXISTS trade_episodes (
   max_favorable_excursion_usd DOUBLE,
   capital_seconds_usd_s DOUBLE,
   pnl_historical_usd DOUBLE,
-  pnl_current_usd DOUBLE
+  pnl_current_usd DOUBLE,
+  -- fill_profile: deterministic fill-simulation profile used by the runner.
+  fill_profile SYMBOL CAPACITY 64,
+  -- is_maker: whether the recorded fill was attributed to a maker order.
+  is_maker BOOLEAN,
+  -- fee_regime: versioned fee schedule used for principal accounting.
+  fee_regime SYMBOL CAPACITY 128,
+  -- hedge_pair_id: shared identifier linking the two settled hedge legs.
+  hedge_pair_id SYMBOL CAPACITY 4096 NOCACHE,
+  -- prompt_version: Jev prompt version used to produce the evaluation.
+  prompt_version SYMBOL CAPACITY 128,
+  -- jev_model: Jev model identifier used to produce the evaluation.
+  jev_model SYMBOL CAPACITY 128
 ) TIMESTAMP(signal_ts_ms) PARTITION BY DAY;

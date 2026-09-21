@@ -3,7 +3,11 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use crate::{domain::Trigger, jev::V1Signal};
+use crate::{
+    domain::Trigger,
+    jev::V1Signal,
+    replay::{ExitType, Side, TradeEpisode},
+};
 use questdb::ingress::{Buffer, ProtocolVersion, Sender, TimestampMicros};
 use serde::{Deserialize, Serialize};
 
@@ -65,10 +69,128 @@ impl ExperimentTags {
 }
 use tokio::{sync::mpsc, task::JoinHandle};
 
+/// Serializable replay ledger row destined for QuestDB and JSON consumers.
+///
+/// The row retains the complete ledger lifecycle even when the current
+/// `trade_episodes` schema only ingests its stable execution/accounting
+/// columns. Provenance defaults are deliberately explicit: the replay runner
+/// in Task 10 is responsible for setting fill profile, maker attribution, fee
+/// regime, prompt version, and Jev model before persistence.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TradeEpisodeRow {
+    pub episode_id: String,
+    pub strategy_version: String,
+    pub market: String,
+    pub asset: String,
+    pub horizon: String,
+    pub signal_ts_ms: i64,
+    pub jev_start_ts_ms: i64,
+    pub jev_latency_ms: u64,
+    pub submit_latency_ms: u64,
+    pub order_arrival_ts_ms: i64,
+    pub side: Side,
+    pub limit_price: f64,
+    pub stake_usd: f64,
+    pub shares: f64,
+    pub intended_stake_usd: f64,
+    pub actual_notional_usd: f64,
+    pub rounding_delta_usd: f64,
+    pub fill_ts_ms: Option<i64>,
+    pub fill_price: Option<f64>,
+    pub fill_qty: Option<f64>,
+    pub exit_type: ExitType,
+    pub exit_price: Option<f64>,
+    pub exit_ts_ms: Option<i64>,
+    pub exit_signal_ts_ms: Option<i64>,
+    pub exit_arrival_ts_ms: Option<i64>,
+    pub exit_fill_ts_ms: Option<i64>,
+    pub resolution_at_ms: Option<i64>,
+    pub resolution_outcome: Option<String>,
+    pub resolution_provenance: Option<String>,
+    pub exit_submit_latency_ms: u64,
+    pub gross_pnl_usd: f64,
+    pub fees_usd: f64,
+    pub rebates_usd: f64,
+    pub net_pnl_usd: f64,
+    pub max_adverse_excursion_usd: f64,
+    pub max_favorable_excursion_usd: f64,
+    pub capital_seconds_usd_s: f64,
+    pub pnl_historical_usd: Option<f64>,
+    pub pnl_current_usd: Option<f64>,
+    pub fill_profile: String,
+    pub is_maker: bool,
+    pub fee_regime: String,
+    pub hedge_pair_id: Option<String>,
+    pub prompt_version: Option<String>,
+    pub jev_model: Option<String>,
+}
+
+impl From<&TradeEpisode> for TradeEpisodeRow {
+    fn from(episode: &TradeEpisode) -> Self {
+        Self {
+            episode_id: episode.episode_id.clone(),
+            strategy_version: episode.strategy_version.clone(),
+            market: episode.market.clone(),
+            asset: episode.asset.clone(),
+            horizon: episode.horizon.clone(),
+            signal_ts_ms: episode.signal_ts_ms,
+            jev_start_ts_ms: episode.jev_start_ts_ms,
+            jev_latency_ms: episode.jev_latency_ms,
+            submit_latency_ms: episode.submit_latency_ms,
+            order_arrival_ts_ms: episode.order_arrival_ts_ms,
+            side: episode.side,
+            limit_price: episode.limit_price,
+            stake_usd: episode.stake_usd,
+            shares: episode.shares,
+            intended_stake_usd: episode.intended_stake_usd,
+            actual_notional_usd: episode.actual_notional_usd,
+            rounding_delta_usd: episode.rounding_delta_usd,
+            fill_ts_ms: episode.fill_ts_ms,
+            fill_price: episode.fill_price,
+            fill_qty: episode.fill_qty,
+            exit_type: episode.exit_type,
+            exit_price: episode.exit_price,
+            exit_ts_ms: episode.exit_ts_ms,
+            exit_signal_ts_ms: episode.exit_signal_ts_ms,
+            exit_arrival_ts_ms: episode.exit_arrival_ts_ms,
+            exit_fill_ts_ms: episode.exit_fill_ts_ms,
+            resolution_at_ms: episode.resolution_at_ms,
+            resolution_outcome: episode.resolution_outcome.clone(),
+            resolution_provenance: episode.resolution_provenance.clone(),
+            exit_submit_latency_ms: episode.exit_submit_latency_ms,
+            gross_pnl_usd: episode.gross_pnl_usd,
+            fees_usd: episode.fees_usd,
+            rebates_usd: episode.rebates_usd,
+            net_pnl_usd: episode.net_pnl_usd,
+            max_adverse_excursion_usd: episode.max_adverse_excursion_usd,
+            max_favorable_excursion_usd: episode.max_favorable_excursion_usd,
+            capital_seconds_usd_s: episode.capital_seconds_usd_s,
+            pnl_historical_usd: episode.pnl_historical_usd,
+            pnl_current_usd: episode.pnl_current_usd,
+            // These defaults are replaced by the Task 10 runner through the
+            // ledger setters before it emits the storage event.
+            fill_profile: episode
+                .fill_profile
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            is_maker: episode.is_maker.unwrap_or(false),
+            fee_regime: episode
+                .fee_regime
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            hedge_pair_id: episode.hedge_pair_id.clone(),
+            prompt_version: episode.prompt_version.clone(),
+            jev_model: episode.jev_model.clone(),
+        }
+    }
+}
+
 /// A row destined for one of the QuestDB tables defined in `questdb/schema.sql`.
 ///
 /// Timestamps are UNIX epoch microseconds. JSON columns remain strings so the
 /// storage boundary does not depend on `serde_json::Value`.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum StorageEvent {
     /// One executed trade.
@@ -82,6 +204,8 @@ pub enum StorageEvent {
         fee_bps: f64,
         tx_hash: String,
     },
+    /// One complete replay order episode, including ledger and provenance.
+    TradeEpisode { row: TradeEpisodeRow },
     /// The current best bid and ask for one token.
     TopOfBook {
         ts: i64,
@@ -285,7 +409,21 @@ pub enum StorageEvent {
     },
 }
 
+impl From<&TradeEpisode> for StorageEvent {
+    fn from(episode: &TradeEpisode) -> Self {
+        Self::trade_episode(episode)
+    }
+}
+
 impl StorageEvent {
+    /// Build a storage event from a replay ledger episode.
+    #[must_use]
+    pub fn trade_episode(episode: &TradeEpisode) -> Self {
+        Self::TradeEpisode {
+            row: episode.into(),
+        }
+    }
+
     /// Build a V1 Jev signal row from a validated signal and its state identity.
     ///
     /// The Jev client currently does not expose usage, so this helper stores
@@ -518,6 +656,10 @@ fn build_row(event: &StorageEvent) -> questdb::Result<Buffer> {
     Ok(buffer)
 }
 
+fn timestamp_micros(ts_ms: i64) -> TimestampMicros {
+    TimestampMicros::new(ts_ms.saturating_mul(1_000))
+}
+
 fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()> {
     match event {
         StorageEvent::Trade {
@@ -540,6 +682,75 @@ fn append_event(buffer: &mut Buffer, event: &StorageEvent) -> questdb::Result<()
                 .column_f64("fee_bps", *fee_bps)?
                 .column_str("tx_hash", tx_hash)?
                 .at(TimestampMicros::new(*ts))?;
+        }
+        StorageEvent::TradeEpisode { row } => {
+            let side = match row.side {
+                Side::BuyYes => "buy_yes",
+                Side::BuyNo => "buy_no",
+            };
+            let exit_type = match row.exit_type {
+                ExitType::Resolution => "resolution",
+                ExitType::Hedge => "hedge",
+                ExitType::Sell => "sell",
+                ExitType::Stop => "stop",
+                ExitType::NoFill => "no_fill",
+            };
+            let ilp_row = buffer
+                .table("trade_episodes")?
+                .symbol("episode_id", &row.episode_id)?
+                .symbol("strategy_version", &row.strategy_version)?
+                .symbol("market", &row.market)?
+                .symbol("asset", &row.asset)?
+                .symbol("horizon", &row.horizon)?
+                .symbol("side", side)?
+                .symbol("exit_type", exit_type)?
+                .symbol("fill_profile", &row.fill_profile)?
+                .symbol("fee_regime", &row.fee_regime)?;
+            if let Some(hedge_pair_id) = &row.hedge_pair_id {
+                ilp_row.symbol("hedge_pair_id", hedge_pair_id)?;
+            }
+            if let Some(prompt_version) = &row.prompt_version {
+                ilp_row.symbol("prompt_version", prompt_version)?;
+            }
+            if let Some(jev_model) = &row.jev_model {
+                ilp_row.symbol("jev_model", jev_model)?;
+            }
+            ilp_row
+                .column_i64("jev_start_ts_ms", row.jev_start_ts_ms)?
+                .column_i64("jev_latency_ms", row.jev_latency_ms as i64)?
+                .column_i64("submit_latency_ms", row.submit_latency_ms as i64)?
+                .column_i64("order_arrival_ts_ms", row.order_arrival_ts_ms)?
+                .column_f64("limit_price", row.limit_price)?
+                .column_f64("stake_usd", row.stake_usd)?
+                .column_f64("shares", row.shares)?
+                .column_f64("gross_pnl_usd", row.gross_pnl_usd)?
+                .column_f64("fees_usd", row.fees_usd)?
+                .column_f64("rebates_usd", row.rebates_usd)?
+                .column_f64("net_pnl_usd", row.net_pnl_usd)?
+                .column_f64("max_adverse_excursion_usd", row.max_adverse_excursion_usd)?
+                .column_f64(
+                    "max_favorable_excursion_usd",
+                    row.max_favorable_excursion_usd,
+                )?
+                .column_f64("capital_seconds_usd_s", row.capital_seconds_usd_s)?
+                .column_bool("is_maker", row.is_maker)?;
+
+            if let Some(fill_ts_ms) = row.fill_ts_ms {
+                ilp_row.column_ts("fill_ts_ms", timestamp_micros(fill_ts_ms))?;
+            }
+            if let Some(fill_price) = row.fill_price {
+                ilp_row.column_f64("fill_price", fill_price)?;
+            }
+            if let Some(fill_qty) = row.fill_qty {
+                ilp_row.column_f64("fill_qty", fill_qty)?;
+            }
+            if let Some(exit_price) = row.exit_price {
+                ilp_row.column_f64("exit_price", exit_price)?;
+            }
+            if let Some(exit_ts_ms) = row.exit_ts_ms {
+                ilp_row.column_ts("exit_ts_ms", timestamp_micros(exit_ts_ms))?;
+            }
+            ilp_row.at(timestamp_micros(row.signal_ts_ms))?;
         }
         StorageEvent::TopOfBook {
             ts,
@@ -938,6 +1149,7 @@ mod tests {
     use crate::{
         domain::Trigger,
         jev::{TickDistribution, V1Signal},
+        replay::{Side, TradeEpisode},
     };
     use tokio::sync::mpsc;
 
@@ -969,6 +1181,46 @@ mod tests {
         assert!(row.contains("size=12.5"));
         assert!(row.contains("fee_bps=2"));
         assert!(row.contains("tx_hash=\"0xabc\""));
+    }
+
+    #[test]
+    fn trade_episodes_map_ledger_and_provenance_columns_without_io() {
+        let mut episode = TradeEpisode::new(
+            "episode-storage",
+            "strategy-v1",
+            "market-1",
+            "BTC",
+            "5m",
+            1_000,
+            900,
+            50,
+            50,
+            Side::BuyYes,
+            0.40,
+            10.0,
+        )
+        .expect("valid episode");
+        episode
+            .apply_fill(1_200, 0.40, 25.0)
+            .expect("fill arrives after order arrival");
+        episode.set_fill_profile("conservative");
+        episode.set_is_maker(true);
+        episode.set_fee_regime("historical-2026");
+        episode.set_hedge_pair_id("hedge:episode-storage");
+        episode.set_prompt_version("prompt-v3");
+        episode.set_jev_model("jev-latest");
+
+        let row = row_text(&StorageEvent::trade_episode(&episode));
+        assert!(row.starts_with("trade_episodes,episode_id=episode-storage"));
+        assert!(row.contains("strategy_version=strategy-v1"));
+        assert!(row.contains("fill_profile=conservative"));
+        assert!(row.contains("is_maker=t"));
+        assert!(row.contains("fee_regime=historical-2026"));
+        assert!(row.contains("hedge_pair_id=hedge:episode-storage"));
+        assert!(row.contains("prompt_version=prompt-v3"));
+        assert!(row.contains("jev_model=jev-latest"));
+        assert!(row.contains("fill_price=0.4"));
+        assert!(row.contains("fill_qty=25"));
     }
 
     #[test]
