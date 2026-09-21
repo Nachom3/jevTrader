@@ -20,6 +20,7 @@ pub mod markouts;
 pub mod portfolio;
 pub mod report;
 pub mod runner;
+pub mod sizing;
 pub mod source;
 pub mod synchronizer;
 pub mod types;
@@ -45,6 +46,9 @@ pub use report::{
 pub use runner::{
     ARMS, Arm, JevEvaluator, RawOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
     SignalRecord, StubJev, SyntheticItem, V3_ARMS,
+};
+pub use sizing::{
+    MarketConstraints, STANDARD_STAKE_USD, SizedOrder, size_entry, size_hedge, size_standard_entry,
 };
 pub use source::{ChunkEventSource, HistoricalSource, InMemorySource, read_underlying_window};
 pub use synchronizer::{SynchronizedEvent, Synchronizer, as_of_backward};

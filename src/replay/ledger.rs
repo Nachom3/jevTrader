@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::sizing::SizedOrder;
+
 /// The token bought by a trade episode.
 ///
 /// Values serialize as `"buy_yes"` and `"buy_no"` for QuestDB/JSON.
@@ -44,6 +46,15 @@ pub struct TradeEpisode {
     pub limit_price: f64,
     pub stake_usd: f64,
     pub shares: f64,
+    /// Intended stake before venue quantization; defaults to zero for legacy rows.
+    #[serde(default)]
+    pub intended_stake_usd: f64,
+    /// Executable notional after price and share quantization.
+    #[serde(default)]
+    pub actual_notional_usd: f64,
+    /// Intended stake minus executable notional after quantization.
+    #[serde(default)]
+    pub rounding_delta_usd: f64,
     pub fill_ts_ms: Option<i64>,
     pub fill_price: Option<f64>,
     pub fill_qty: Option<f64>,
@@ -158,6 +169,9 @@ impl TradeEpisode {
             limit_price,
             stake_usd,
             shares: stake_usd / limit_price,
+            intended_stake_usd: stake_usd,
+            actual_notional_usd: (stake_usd / limit_price) * limit_price,
+            rounding_delta_usd: stake_usd - (stake_usd / limit_price) * limit_price,
             fill_ts_ms: None,
             fill_price: None,
             fill_qty: None,
@@ -179,6 +193,31 @@ impl TradeEpisode {
             pnl_historical_usd: None,
             pnl_current_usd: None,
         })
+    }
+
+    /// Applies venue sizing to this episode.
+    ///
+    /// An unfilled episode may adopt the sized share quantity. Once any fill
+    /// field exists, a share mismatch is rejected so historical fill records
+    /// cannot be reinterpreted. Matching shares still refresh the sizing and
+    /// notional fields from the supplied order.
+    pub fn apply_sizing(&mut self, sizing: &SizedOrder) -> Result<(), String> {
+        let has_fill =
+            self.fill_ts_ms.is_some() || self.fill_price.is_some() || self.fill_qty.is_some();
+        if has_fill && (self.shares - sizing.shares).abs() > 1e-9 {
+            return Err(format!(
+                "cannot apply sizing with {} shares to filled episode with {} shares",
+                sizing.shares, self.shares
+            ));
+        }
+
+        self.limit_price = sizing.limit_price;
+        self.stake_usd = sizing.intended_stake_usd;
+        self.shares = sizing.shares;
+        self.intended_stake_usd = sizing.intended_stake_usd;
+        self.actual_notional_usd = sizing.actual_notional_usd;
+        self.rounding_delta_usd = sizing.rounding_delta_usd;
+        Ok(())
     }
 
     /// Records a fill after the order has arrived in replay event time.
