@@ -538,12 +538,12 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         let questions_json = serde_json::to_string(questions).unwrap_or_default();
         let qhash = hash_str(&questions_json);
         let hash = hash_str(&state_json);
-        let key = JevCacheKey {
-            state_hash: hash.clone(),
-            questions_hash: qhash,
-            model: "jev-latest".to_owned(),
-            variant: arm.name.to_owned(),
-        };
+        let key = JevCacheKey::new(
+            hash.clone(),
+            qhash,
+            "jev-latest".to_owned(),
+            arm.name.to_owned(),
+        );
         let outcome = self.cached_or_evaluate(
             &key,
             &state,
@@ -590,6 +590,10 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 envelope_json: outcome.envelope_json.clone(),
                 latency_ms: outcome.latency_ms,
                 live: outcome.live,
+                // Store-time provenance unknown at this layer; populated by live callers (Task 10 wiring).
+                request_json: String::new(),
+                parsed_output_json: String::new(),
+                jev_start_ts_ms: 0,
             },
         );
         outcome

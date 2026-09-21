@@ -93,6 +93,9 @@ pub struct TradeEpisode {
     /// Jev model used for the evaluation, set by the replay runner.
     #[serde(default)]
     pub jev_model: Option<String>,
+    /// Ablation arm lineage (Task 11).
+    #[serde(default)]
+    pub arm: Option<String>,
     #[serde(default)]
     pub exit_submit_latency_ms: u64,
     pub gross_pnl_usd: f64,
@@ -214,6 +217,7 @@ impl TradeEpisode {
             hedge_pair_id: None,
             prompt_version: None,
             jev_model: None,
+            arm: None,
             exit_submit_latency_ms,
             gross_pnl_usd: 0.0,
             fees_usd: 0.0,
@@ -309,6 +313,11 @@ impl TradeEpisode {
     /// Records the Jev model used by the replay runner.
     pub fn set_jev_model(&mut self, jev_model: impl Into<String>) {
         self.jev_model = Some(jev_model.into());
+    }
+
+    /// Records the ablation arm lineage used by the replay runner.
+    pub fn set_arm(&mut self, arm: impl Into<String>) {
+        self.arm = Some(arm.into());
     }
 
     /// Requests an exit and computes its event-time arrival timestamp.

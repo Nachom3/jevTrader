@@ -10,6 +10,7 @@
 //! `strategy::quote::decide_quote`, `strategy::risk::RiskGate`, and
 //! `execution::markout`.
 
+pub mod arms;
 pub mod clock;
 pub mod exits;
 pub mod fees;
@@ -29,6 +30,7 @@ pub mod synchronizer;
 pub mod types;
 pub mod walkforward;
 
+pub use arms::{Arm, ArmPolicy, ArmRun};
 pub use clock::ReplayClock;
 pub use exits::{
     ExitPolicy, HedgeQuote, MergeResult, hedge_quote, merge_pair, settle_hedge_pair,
@@ -58,7 +60,7 @@ pub use resolution::{
     resolve_market,
 };
 pub use runner::{
-    ARMS, Arm, JevEvaluator, RawOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
+    ARMS, JevEvaluator, RawOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
     SignalRecord, StubJev, SyntheticItem, V3_ARMS,
 };
 pub use sizing::{
