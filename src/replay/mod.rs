@@ -11,6 +11,7 @@
 //! `execution::markout`.
 
 pub mod arms;
+pub mod bootstrap;
 pub mod clock;
 pub mod economics;
 pub mod exits;
@@ -32,6 +33,10 @@ pub mod types;
 pub mod walkforward;
 
 pub use arms::{Arm, ArmPolicy, ArmRun};
+pub use bootstrap::{
+    Block, BlockBootstrap, BlockId, BootstrapSummary, OosHeadline, OosReport, oos_report,
+    oos_report_with_draws, summarize_distribution,
+};
 pub use clock::ReplayClock;
 pub use economics::{ExecutionPath, ResolutionTimeFilter, classify_execution, passes, path_of};
 pub use exits::{
@@ -74,4 +79,8 @@ pub use types::{
     Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyDistribution, LatencyProfile, Regime,
     ResolutionSpec, Split,
 };
-pub use walkforward::{WalkforwardRunner, WalkforwardWindow};
+pub use walkforward::{
+    MarketSpan, SplitAssign, TemporalWindow, WalkforwardRunner, WalkforwardWindow,
+    apply_purge_embargo, embargo_after_test, embargo_flags, gap_ms, plan_windows, purge_train,
+    requires_gap_ms, try_plan_windows, try_purge_train,
+};
