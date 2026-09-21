@@ -935,6 +935,8 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                         fill_fraction: 0.0,
                         fill_price: quote_price,
                         profile: self.config.fill,
+                        fill_ts_ms: None,
+                        used_aggressive_qty: 0.0,
                     }
                 };
                 // Markouts from fill price vs backward-sampled future mids.
