@@ -18,6 +18,7 @@ pub mod jev_cache;
 pub mod ledger;
 pub mod markouts;
 pub mod portfolio;
+pub mod regimes;
 pub mod report;
 pub mod resolution;
 pub mod runner;
@@ -41,6 +42,12 @@ pub use jev_cache::JevCache;
 pub use ledger::{ExitType, Side, TradeEpisode};
 pub use markouts::{MarkoutHorizons, signed_markouts_pp};
 pub use portfolio::{Portfolio, PortfolioStats};
+pub use regimes::{
+    BASIS_THRESHOLD, BasisBucket, FAR_MINUTES, FlowBucket, MID_MINUTES, NEAR_MINUTES,
+    OFI_THRESHOLD, RegimeFeatures, RegimeLabel, RollingRegimeClassifier, SIGMA_NEG_1, SIGMA_NEG_2,
+    SIGMA_POS_1, SIGMA_POS_2, SIGMA_ZERO, SigmaBucket, TREND_THRESHOLD, TimeBucket, Trend,
+    Volatility,
+};
 pub use report::{
     ReportRow, SegmentKey, build_report, conditional_markout_5s, write_json, write_markdown,
 };
