@@ -87,12 +87,21 @@ pub fn hedge_quote(entry: &TradeEpisode, opposite_price: f64) -> Result<HedgeQuo
     })
 }
 
-/// Settles both legs of a filled hedge using only the other leg's fill data.
+/// Settles both legs of a filled hedge using the pair's locked value.
 ///
-/// The function has no error return in order to preserve the requested API:
-/// invalid or incomplete episodes are left untouched. With two valid fills,
-/// both exits use the later fill timestamp and each gross PnL is calculated
-/// from the opposite leg's actual fill price.
+/// The former crossed-price settlement was wrong: it treated the YES leg as
+/// exited at the NO fill and the NO leg as exited at the YES fill, so the two
+/// leg PnLs always summed to zero instead of the complete-pair value. The
+/// convention here attributes the locked PnL to `entry`: its exit price is
+/// `1.0 - hedge_fill_price`, the YES value implied by the cost of the NO leg.
+/// The hedge exits at its own fill price and is therefore flat. Before fees,
+/// `entry.gross_pnl_usd + hedge.gross_pnl_usd` equals
+/// `merge_pair(...).locked_pnl` for the equal-sized opposite fills.
+///
+/// At resolution, each leg still settles independently to `1` or `0`
+/// according to the supplied outcome; their terminal values sum to the pair's
+/// `$1` per-share value, so the pair PnL remains the same locked amount
+/// (invariants 6/7). Invalid or incomplete episodes are left untouched.
 pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
     let Ok((entry_fill_ts, entry_fill_price, entry_qty)) = filled_values(entry) else {
         return;
@@ -101,22 +110,35 @@ pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
         return;
     };
 
-    let exit_ts_ms = entry_fill_ts.max(hedge_fill_ts);
-    if entry
-        .apply_exit(ExitType::Hedge, exit_ts_ms, hedge_fill_price)
-        .is_err()
-    {
-        return;
-    }
-    if hedge
-        .apply_exit(ExitType::Hedge, exit_ts_ms, entry_fill_price)
-        .is_err()
+    if !matches!(
+        (entry.side, hedge.side),
+        (Side::BuyYes, Side::BuyNo) | (Side::BuyNo, Side::BuyYes)
+    ) || (entry_qty - hedge_qty).abs() > 1e-9
     {
         return;
     }
 
-    entry.gross_pnl_usd = entry_qty * (hedge_fill_price - entry_fill_price);
-    hedge.gross_pnl_usd = hedge_qty * (entry_fill_price - hedge_fill_price);
+    let exit_ts_ms = entry_fill_ts.max(hedge_fill_ts);
+    let entry_exit_price = 1.0 - hedge_fill_price;
+
+    // Apply both exits to clones so any ledger rejection leaves the pair
+    // untouched as well as the validation failures above.
+    let mut settled_entry = entry.clone();
+    let mut settled_hedge = hedge.clone();
+    if settled_entry
+        .apply_exit(ExitType::Hedge, exit_ts_ms, entry_exit_price)
+        .is_err()
+        || settled_hedge
+            .apply_exit(ExitType::Hedge, exit_ts_ms, hedge_fill_price)
+            .is_err()
+    {
+        return;
+    }
+
+    settled_entry.gross_pnl_usd = entry_qty * (entry_exit_price - entry_fill_price);
+    settled_hedge.gross_pnl_usd = 0.0;
+    *entry = settled_entry;
+    *hedge = settled_hedge;
 }
 
 /// Computes the deterministic value and PnL of merging a complete YES/NO pair.

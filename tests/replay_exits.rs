@@ -23,9 +23,13 @@ fn episode(id: &str, side: Side, limit_price: f64) -> TradeEpisode {
 }
 
 fn filled_episode(id: &str, side: Side, price: f64, ts_ms: i64) -> TradeEpisode {
+    filled_episode_with_qty(id, side, price, ts_ms, 10.0)
+}
+
+fn filled_episode_with_qty(id: &str, side: Side, price: f64, ts_ms: i64, qty: f64) -> TradeEpisode {
     let mut trade = episode(id, side, price);
     trade
-        .apply_fill(ts_ms, price, 10.0)
+        .apply_fill(ts_ms, price, qty)
         .expect("fill arrives after order arrival");
     trade
 }
@@ -37,21 +41,70 @@ fn hedge_profit_uses_the_two_token_boundary() {
 }
 
 #[test]
-fn hedge_pair_uses_real_fills_and_closes_both_legs() {
+fn hedge_pair_attributes_locked_pnl_to_the_entry_leg() {
     let mut yes = filled_episode("yes", Side::BuyYes, 0.45, 100);
     let mut no = filled_episode("no", Side::BuyNo, 0.52, 120);
 
     settle_hedge_pair(&mut yes, &mut no);
 
+    let merge = merge_pair(0.45 * 10.0, 0.52 * 10.0, 10.0).expect("complete pair");
     assert_eq!(yes.exit_type, ExitType::Hedge);
     assert_eq!(no.exit_type, ExitType::Hedge);
-    assert_eq!(yes.exit_price, Some(0.52));
-    assert_eq!(no.exit_price, Some(0.45));
+    assert_eq!(yes.exit_price, Some(0.48));
+    assert_eq!(no.exit_price, Some(0.52));
     assert_eq!(yes.exit_ts_ms, Some(120));
     assert_eq!(no.exit_ts_ms, Some(120));
-    assert!((yes.gross_pnl_usd - 0.7).abs() < 1e-9);
-    assert!((no.gross_pnl_usd + 0.7).abs() < 1e-9);
-    assert!((yes.gross_pnl_usd + no.gross_pnl_usd).abs() < 1e-9);
+    assert!((yes.gross_pnl_usd - 0.30).abs() < 1e-9);
+    assert_eq!(no.gross_pnl_usd, 0.0);
+    assert!((yes.gross_pnl_usd + no.gross_pnl_usd - merge.locked_pnl).abs() < 1e-9);
+    assert!((yes.gross_pnl_usd - merge.locked_pnl).abs() < 1e-9);
+}
+
+#[test]
+fn hedge_pair_handles_loss_and_both_entry_directions() {
+    let mut losing_yes = filled_episode("losing-yes", Side::BuyYes, 0.45, 100);
+    let mut losing_no = filled_episode("losing-no", Side::BuyNo, 0.58, 120);
+    settle_hedge_pair(&mut losing_yes, &mut losing_no);
+    assert!((losing_yes.gross_pnl_usd + 0.30).abs() < 1e-9);
+    assert_eq!(losing_no.gross_pnl_usd, 0.0);
+
+    let mut no_entry = filled_episode("no-entry", Side::BuyNo, 0.52, 100);
+    let mut yes_hedge = filled_episode("yes-hedge", Side::BuyYes, 0.45, 120);
+    settle_hedge_pair(&mut no_entry, &mut yes_hedge);
+
+    let merge = merge_pair(0.52 * 10.0, 0.45 * 10.0, 10.0).expect("complete pair");
+    assert_eq!(no_entry.exit_price, Some(0.55));
+    assert_eq!(yes_hedge.exit_price, Some(0.45));
+    assert!((no_entry.gross_pnl_usd - 0.30).abs() < 1e-9);
+    assert_eq!(yes_hedge.gross_pnl_usd, 0.0);
+    assert!((no_entry.gross_pnl_usd + yes_hedge.gross_pnl_usd - merge.locked_pnl).abs() < 1e-9);
+}
+
+#[test]
+fn invalid_hedge_pair_does_not_mutate_either_leg() {
+    let mut unequal_entry = filled_episode_with_qty("unequal-entry", Side::BuyYes, 0.45, 100, 10.0);
+    let mut unequal_hedge = filled_episode_with_qty("unequal-hedge", Side::BuyNo, 0.52, 120, 9.0);
+    let unequal_entry_before = unequal_entry.clone();
+    let unequal_hedge_before = unequal_hedge.clone();
+    settle_hedge_pair(&mut unequal_entry, &mut unequal_hedge);
+    assert_eq!(unequal_entry, unequal_entry_before);
+    assert_eq!(unequal_hedge, unequal_hedge_before);
+
+    let mut same_side_entry = filled_episode("same-side-entry", Side::BuyYes, 0.45, 100);
+    let mut same_side_hedge = filled_episode("same-side-hedge", Side::BuyYes, 0.52, 120);
+    let same_side_entry_before = same_side_entry.clone();
+    let same_side_hedge_before = same_side_hedge.clone();
+    settle_hedge_pair(&mut same_side_entry, &mut same_side_hedge);
+    assert_eq!(same_side_entry, same_side_entry_before);
+    assert_eq!(same_side_hedge, same_side_hedge_before);
+
+    let mut missing_fill = episode("missing-fill", Side::BuyYes, 0.45);
+    let mut filled_hedge = filled_episode("filled-hedge", Side::BuyNo, 0.52, 120);
+    let missing_fill_before = missing_fill.clone();
+    let filled_hedge_before = filled_hedge.clone();
+    settle_hedge_pair(&mut missing_fill, &mut filled_hedge);
+    assert_eq!(missing_fill, missing_fill_before);
+    assert_eq!(filled_hedge, filled_hedge_before);
 }
 
 #[test]
