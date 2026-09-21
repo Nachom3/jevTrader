@@ -79,7 +79,7 @@ fn apply_historical_and_current_fees(episode: &mut TradeEpisode, is_maker: bool)
 }
 
 fn build_episodes() -> Vec<TradeEpisode> {
-    let mut ep1 = TradeEpisode::new(
+    let mut ep1 = TradeEpisode::new_with_exit_submit_latency(
         "EP1",
         "lead-lag-v1",
         "market-mini",
@@ -89,6 +89,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
         1_000,
         80,
         20,
+        0,
         Side::BuyYes,
         0.40,
         5.0,
@@ -106,7 +107,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
     assert_close(ep1.gross_pnl_usd, 7.50);
     apply_historical_and_current_fees(&mut ep1, false);
 
-    let mut ep2_entry = TradeEpisode::new(
+    let mut ep2_entry = TradeEpisode::new_with_exit_submit_latency(
         "EP2-entry",
         "lead-lag-v1",
         "market-mini",
@@ -116,6 +117,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
         3_000,
         30,
         20,
+        0,
         Side::BuyYes,
         0.45,
         4.50,
@@ -138,7 +140,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
     assert_close(quote.qty, 10.0);
     assert!(entry_price + quote.limit_price <= 1.0 - 0.03 + EPSILON);
 
-    let mut ep2_hedge = TradeEpisode::new(
+    let mut ep2_hedge = TradeEpisode::new_with_exit_submit_latency(
         "EP2-hedge",
         "lead-lag-v1",
         "market-mini",
@@ -148,6 +150,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
         3_300,
         30,
         20,
+        0,
         quote.side,
         quote.limit_price,
         quote.qty * quote.limit_price,
@@ -173,6 +176,19 @@ fn build_episodes() -> Vec<TradeEpisode> {
     assert_eq!(ep2_entry.exit_type, ExitType::Hedge);
     assert_eq!(ep2_hedge.exit_type, ExitType::Hedge);
     assert_eq!(ep2_entry.exit_ts_ms, ep2_hedge.exit_ts_ms);
+    let hedge_exit_signal = ep2_entry
+        .fill_ts_ms
+        .expect("entry fill")
+        .max(ep2_hedge.fill_ts_ms.expect("hedge fill"));
+    for episode in [&ep2_entry, &ep2_hedge] {
+        let signal = episode.exit_signal_ts_ms.expect("exit signal");
+        let arrival = episode.exit_arrival_ts_ms.expect("exit arrival");
+        let fill = episode.exit_fill_ts_ms.expect("exit fill");
+        assert!(signal <= arrival && arrival <= fill);
+    }
+    assert_eq!(ep2_entry.exit_signal_ts_ms, Some(hedge_exit_signal));
+    assert_eq!(ep2_hedge.exit_signal_ts_ms, Some(hedge_exit_signal));
+    assert!(ep2_hedge.exit_arrival_ts_ms.unwrap() > ep2_entry.order_arrival_ts_ms);
     assert_close(ep2_entry.gross_pnl_usd, 0.30);
     assert_close(ep2_hedge.gross_pnl_usd, 0.0);
 
@@ -185,7 +201,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
     apply_historical_and_current_fees(&mut ep2_entry, true);
     apply_historical_and_current_fees(&mut ep2_hedge, true);
 
-    let mut ep3 = TradeEpisode::new(
+    let mut ep3 = TradeEpisode::new_with_exit_submit_latency(
         "EP3",
         "lead-lag-v1",
         "market-mini",
@@ -195,6 +211,7 @@ fn build_episodes() -> Vec<TradeEpisode> {
         4_000,
         20,
         10,
+        0,
         Side::BuyYes,
         0.55,
         5.0,
@@ -254,7 +271,7 @@ fn print_summary(episode: &TradeEpisode) {
     let current_net = episode.pnl_current_usd.unwrap_or(0.0);
     let current_fee = episode.gross_pnl_usd - current_net;
     eprintln!(
-        "[replay-mini] id={} side={:?} limit={:.4} shares={:.6} arrival={} fill_ts={:?} fill_price={:?} fill_qty={:?} exit_type={:?} exit_price={:?} exit_ts={:?} gross={:.9} fee_historical={:.9} net_historical={:.9} fee_current={:.9} net_current={:.9}",
+        "[replay-mini] id={} side={:?} limit={:.4} shares={:.6} arrival={} fill_ts={:?} fill_price={:?} fill_qty={:?} exit_type={:?} exit_price={:?} exit_signal_ts={:?} exit_arrival_ts={:?} exit_fill_ts={:?} exit_ts={:?} resolution_at={:?} gross={:.9} fee_historical={:.9} net_historical={:.9} fee_current={:.9} net_current={:.9}",
         episode.episode_id,
         episode.side,
         episode.limit_price,
@@ -265,7 +282,11 @@ fn print_summary(episode: &TradeEpisode) {
         episode.fill_qty,
         episode.exit_type,
         episode.exit_price,
+        episode.exit_signal_ts_ms,
+        episode.exit_arrival_ts_ms,
+        episode.exit_fill_ts_ms,
         episode.exit_ts_ms,
+        episode.resolution_at_ms,
         episode.gross_pnl_usd,
         episode.fees_usd,
         episode.net_pnl_usd,
@@ -314,6 +335,16 @@ fn deterministic_mini_replay_covers_fills_hedge_resolution_fees_and_nofill() {
             assert!(fill_ts_ms >= episode.order_arrival_ts_ms);
             if let Some(exit_ts_ms) = episode.exit_ts_ms {
                 assert!(exit_ts_ms >= fill_ts_ms);
+            }
+            if let (Some(signal), Some(arrival), Some(exit_fill)) = (
+                episode.exit_signal_ts_ms,
+                episode.exit_arrival_ts_ms,
+                episode.exit_fill_ts_ms,
+            ) {
+                assert!(signal <= arrival && arrival <= exit_fill);
+            }
+            if let Some(resolution) = episode.resolution_at_ms {
+                assert!(resolution >= fill_ts_ms);
             }
         } else {
             assert!(episode.is_no_fill());

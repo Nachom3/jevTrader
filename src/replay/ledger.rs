@@ -50,6 +50,16 @@ pub struct TradeEpisode {
     pub exit_type: ExitType,
     pub exit_price: Option<f64>,
     pub exit_ts_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_signal_ts_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_arrival_ts_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_fill_ts_ms: Option<i64>,
+    #[serde(default)]
+    pub resolution_at_ms: Option<i64>,
+    #[serde(default)]
+    pub exit_submit_latency_ms: u64,
     pub gross_pnl_usd: f64,
     pub fees_usd: f64,
     pub rebates_usd: f64,
@@ -79,6 +89,40 @@ impl TradeEpisode {
         jev_start_ts_ms: i64,
         jev_latency_ms: u64,
         submit_latency_ms: u64,
+        side: Side,
+        limit_price: f64,
+        stake_usd: f64,
+    ) -> Result<Self, String> {
+        Self::new_with_exit_submit_latency(
+            episode_id,
+            strategy_version,
+            market,
+            asset,
+            horizon,
+            signal_ts_ms,
+            jev_start_ts_ms,
+            jev_latency_ms,
+            submit_latency_ms,
+            0,
+            side,
+            limit_price,
+            stake_usd,
+        )
+    }
+
+    /// Creates an unfilled episode with explicit entry and exit submit latency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_exit_submit_latency(
+        episode_id: impl Into<String>,
+        strategy_version: impl Into<String>,
+        market: impl Into<String>,
+        asset: impl Into<String>,
+        horizon: impl Into<String>,
+        signal_ts_ms: i64,
+        jev_start_ts_ms: i64,
+        jev_latency_ms: u64,
+        submit_latency_ms: u64,
+        exit_submit_latency_ms: u64,
         side: Side,
         limit_price: f64,
         stake_usd: f64,
@@ -120,6 +164,11 @@ impl TradeEpisode {
             exit_type: ExitType::NoFill,
             exit_price: None,
             exit_ts_ms: None,
+            exit_signal_ts_ms: None,
+            exit_arrival_ts_ms: None,
+            exit_fill_ts_ms: None,
+            resolution_at_ms: None,
+            exit_submit_latency_ms,
             gross_pnl_usd: 0.0,
             fees_usd: 0.0,
             rebates_usd: 0.0,
@@ -147,6 +196,63 @@ impl TradeEpisode {
         Ok(())
     }
 
+    /// Requests an exit and computes its event-time arrival timestamp.
+    pub fn request_exit(
+        &mut self,
+        signal_ts_ms: i64,
+        submit_latency_ms: u64,
+    ) -> Result<(), String> {
+        let submit_latency_ms_i64 = i64::try_from(submit_latency_ms)
+            .map_err(|_| "exit submit latency overflows the i64 timestamp range".to_owned())?;
+        let exit_arrival_ts_ms = signal_ts_ms
+            .checked_add(submit_latency_ms_i64)
+            .ok_or_else(|| "exit arrival timestamp overflows i64".to_owned())?;
+
+        self.exit_signal_ts_ms = Some(signal_ts_ms);
+        self.exit_arrival_ts_ms = Some(exit_arrival_ts_ms);
+        self.exit_submit_latency_ms = submit_latency_ms;
+        Ok(())
+    }
+
+    /// Records the real fill of the exit leg after its requested exit arrives.
+    pub fn apply_exit_fill(&mut self, ts_ms: i64, price: f64) -> Result<(), String> {
+        let Some(exit_arrival_ts_ms) = self.exit_arrival_ts_ms else {
+            return Err("an exit request is required before applying an exit fill".to_owned());
+        };
+        if ts_ms < exit_arrival_ts_ms {
+            return Err(format!(
+                "exit fill timestamp {ts_ms} precedes exit arrival {exit_arrival_ts_ms}"
+            ));
+        }
+
+        self.exit_fill_ts_ms = Some(ts_ms);
+        self.exit_price = Some(price);
+        self.exit_ts_ms = Some(ts_ms);
+        self.capital_seconds_usd_s = self.realized_capital_seconds();
+        Ok(())
+    }
+
+    /// Records a caller-provided resolution timestamp.
+    pub fn set_resolution(&mut self, ts_ms: i64) -> Result<(), String> {
+        if let Some(fill_ts_ms) = self.fill_ts_ms
+            && ts_ms < fill_ts_ms
+        {
+            return Err(format!(
+                "resolution timestamp {ts_ms} precedes fill timestamp {fill_ts_ms}"
+            ));
+        }
+        if let Some(exit_fill_ts_ms) = self.exit_fill_ts_ms
+            && ts_ms < exit_fill_ts_ms
+        {
+            return Err(format!(
+                "resolution timestamp {ts_ms} precedes exit fill timestamp {exit_fill_ts_ms}"
+            ));
+        }
+
+        self.resolution_at_ms = Some(ts_ms);
+        Ok(())
+    }
+
     /// Records a terminal exit. `NoFill` leaves fill and exit details empty.
     pub fn apply_exit(
         &mut self,
@@ -161,6 +267,10 @@ impl TradeEpisode {
             self.exit_type = ExitType::NoFill;
             self.exit_price = None;
             self.exit_ts_ms = None;
+            self.exit_signal_ts_ms = None;
+            self.exit_arrival_ts_ms = None;
+            self.exit_fill_ts_ms = None;
+            self.resolution_at_ms = None;
             return Ok(());
         }
 
@@ -170,6 +280,20 @@ impl TradeEpisode {
         if ts_ms < fill_ts_ms {
             return Err(format!(
                 "exit timestamp {ts_ms} precedes fill timestamp {fill_ts_ms}"
+            ));
+        }
+        if let Some(exit_arrival_ts_ms) = self.exit_arrival_ts_ms
+            && ts_ms < exit_arrival_ts_ms
+        {
+            return Err(format!(
+                "exit timestamp {ts_ms} precedes exit arrival {exit_arrival_ts_ms}"
+            ));
+        }
+        if let Some(exit_fill_ts_ms) = self.exit_fill_ts_ms
+            && ts_ms < exit_fill_ts_ms
+        {
+            return Err(format!(
+                "exit timestamp {ts_ms} precedes exit fill {exit_fill_ts_ms}"
             ));
         }
 

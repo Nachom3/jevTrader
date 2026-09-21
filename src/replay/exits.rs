@@ -118,23 +118,33 @@ pub fn settle_hedge_pair(entry: &mut TradeEpisode, hedge: &mut TradeEpisode) {
         return;
     }
 
-    let exit_ts_ms = entry_fill_ts.max(hedge_fill_ts);
+    let exit_signal_ts_ms = entry_fill_ts.max(hedge_fill_ts);
+    let exit_fill_ts_ms = exit_signal_ts_ms;
     let entry_exit_price = 1.0 - hedge_fill_price;
 
-    // Apply both exits to clones so any ledger rejection leaves the pair
-    // untouched as well as the validation failures above.
+    // Apply both exit chains to clones so any ledger rejection leaves the
+    // pair untouched. A hedge is only settled when its own exit request has
+    // arrived before the real exit fill timestamp.
     let mut settled_entry = entry.clone();
     let mut settled_hedge = hedge.clone();
     if settled_entry
-        .apply_exit(ExitType::Hedge, exit_ts_ms, entry_exit_price)
+        .request_exit(exit_signal_ts_ms, settled_entry.exit_submit_latency_ms)
         .is_err()
         || settled_hedge
-            .apply_exit(ExitType::Hedge, exit_ts_ms, hedge_fill_price)
+            .request_exit(exit_signal_ts_ms, settled_hedge.exit_submit_latency_ms)
+            .is_err()
+        || settled_entry
+            .apply_exit_fill(exit_fill_ts_ms, entry_exit_price)
+            .is_err()
+        || settled_hedge
+            .apply_exit_fill(exit_fill_ts_ms, hedge_fill_price)
             .is_err()
     {
         return;
     }
 
+    settled_entry.exit_type = ExitType::Hedge;
+    settled_hedge.exit_type = ExitType::Hedge;
     settled_entry.gross_pnl_usd = entry_qty * (entry_exit_price - entry_fill_price);
     settled_hedge.gross_pnl_usd = 0.0;
     *entry = settled_entry;
@@ -193,14 +203,27 @@ pub fn settle_resolution(
     if !payoff_win.is_finite() || !(0.0..=1.0).contains(&payoff_win) {
         return Err("payoff_win must be finite and between zero and one".to_owned());
     }
+    if let Some(recorded_resolution_ts_ms) = episode.resolution_at_ms
+        && recorded_resolution_ts_ms != resolution_ts_ms
+    {
+        return Err(format!(
+            "resolution timestamp {resolution_ts_ms} does not match recorded resolution {recorded_resolution_ts_ms}"
+        ));
+    }
 
     let won = match episode.side {
         Side::BuyYes => yes_won,
         Side::BuyNo => !yes_won,
     };
     let payoff = if won { payoff_win } else { 0.0 };
-    episode.apply_exit(ExitType::Resolution, resolution_ts_ms, payoff)?;
-    episode.gross_pnl_usd = fill_qty * (payoff - fill_price);
+
+    // Keep resolution metadata and terminal exit atomic if a pre-existing
+    // exit request makes the supplied resolution timestamp invalid.
+    let mut settled = episode.clone();
+    settled.set_resolution(resolution_ts_ms)?;
+    settled.apply_exit(ExitType::Resolution, resolution_ts_ms, payoff)?;
+    settled.gross_pnl_usd = fill_qty * (payoff - fill_price);
+    *episode = settled;
     Ok(())
 }
 

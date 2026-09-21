@@ -1,7 +1,7 @@
 use jevtrader::replay::{ExitType, Side, TradeEpisode};
 
 fn episode() -> TradeEpisode {
-    TradeEpisode::new(
+    TradeEpisode::new_with_exit_submit_latency(
         "episode-1",
         "lead-lag-v1",
         "market-1",
@@ -11,6 +11,7 @@ fn episode() -> TradeEpisode {
         900,
         100,
         50,
+        25,
         Side::BuyYes,
         0.40,
         10.0,
@@ -71,6 +72,78 @@ fn fill_before_order_arrival_fails_without_mutating() {
 }
 
 #[test]
+fn entry_arrival_uses_checked_signal_jev_and_submit_timestamps() {
+    let trade = episode();
+    assert_eq!(trade.order_arrival_ts_ms, 1_000 + 100 + 50);
+
+    let overflow = TradeEpisode::new(
+        "overflow",
+        "lead-lag-v1",
+        "market-1",
+        "BTC",
+        "5s",
+        i64::MAX,
+        i64::MAX,
+        1,
+        0,
+        Side::BuyYes,
+        0.40,
+        10.0,
+    );
+    assert!(overflow.is_err(), "entry arrival overflow must fail");
+}
+
+#[test]
+fn exit_arrival_uses_checked_signal_and_submit_timestamps() {
+    let mut trade = episode();
+    trade
+        .request_exit(2_000, 35)
+        .expect("exit request should have a checked arrival");
+    assert_eq!(trade.exit_signal_ts_ms, Some(2_000));
+    assert_eq!(trade.exit_arrival_ts_ms, Some(2_035));
+    assert_eq!(trade.exit_submit_latency_ms, 35);
+
+    let before = trade.clone();
+    assert!(trade.request_exit(i64::MAX, 1).is_err());
+    assert_eq!(trade, before, "overflow must not mutate the exit request");
+}
+
+#[test]
+fn exit_fill_before_exit_arrival_fails_without_mutating() {
+    let mut trade = episode();
+    trade
+        .apply_fill(1_200, 0.40, 25.0)
+        .expect("entry fill should arrive");
+    trade
+        .request_exit(2_000, 50)
+        .expect("exit request should arrive at 2050");
+    let before = trade.clone();
+
+    let error = trade
+        .apply_exit_fill(2_049, 0.42)
+        .expect_err("exit fill before arrival must fail");
+
+    assert!(error.contains("precedes exit arrival"));
+    assert_eq!(trade, before);
+}
+
+#[test]
+fn resolution_before_fill_fails_without_mutating() {
+    let mut trade = episode();
+    trade
+        .apply_fill(1_200, 0.40, 25.0)
+        .expect("entry fill should arrive");
+    let before = trade.clone();
+
+    let error = trade
+        .set_resolution(1_199)
+        .expect_err("resolution before fill must fail");
+
+    assert!(error.contains("precedes fill timestamp"));
+    assert_eq!(trade, before);
+}
+
+#[test]
 fn identical_episodes_have_identical_json() {
     let left = episode();
     let right = episode();
@@ -81,6 +154,11 @@ fn identical_episodes_have_identical_json() {
     assert_eq!(left_json, right_json);
     assert!(left_json.contains("\"buy_yes\""));
     assert!(left_json.contains("\"order_arrival_ts_ms\""));
+    assert!(left_json.contains("\"exit_signal_ts_ms\""));
+    assert!(left_json.contains("\"exit_arrival_ts_ms\""));
+    assert!(left_json.contains("\"exit_fill_ts_ms\""));
+    assert!(left_json.contains("\"resolution_at_ms\""));
+    assert!(left_json.contains("\"exit_submit_latency_ms\":25"));
 }
 
 #[test]
