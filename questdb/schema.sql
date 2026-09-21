@@ -272,3 +272,37 @@ CREATE TABLE IF NOT EXISTS signal_markouts (
   asset SYMBOL CAPACITY 16,
   horizon SYMBOL CAPACITY 16
 ) TIMESTAMP(ts) PARTITION BY DAY;
+
+-- One row per replay order episode. signal_ts_ms is designated so unfilled
+-- episodes remain queryable even when they never produce a fill timestamp.
+CREATE TABLE IF NOT EXISTS trade_episodes (
+  signal_ts_ms TIMESTAMP,
+  episode_id SYMBOL CAPACITY 4096 NOCACHE,
+  strategy_version SYMBOL CAPACITY 256,
+  market SYMBOL CAPACITY 4096 NOCACHE,
+  asset SYMBOL CAPACITY 256,
+  horizon SYMBOL CAPACITY 64,
+  jev_start_ts_ms LONG,
+  jev_latency_ms LONG,
+  submit_latency_ms LONG,
+  order_arrival_ts_ms LONG,
+  side SYMBOL CAPACITY 8,
+  limit_price DOUBLE,
+  stake_usd DOUBLE,
+  shares DOUBLE,
+  fill_ts_ms TIMESTAMP,
+  fill_price DOUBLE,
+  fill_qty DOUBLE,
+  exit_type SYMBOL CAPACITY 16,
+  exit_price DOUBLE,
+  exit_ts_ms TIMESTAMP,
+  gross_pnl_usd DOUBLE,
+  fees_usd DOUBLE,
+  rebates_usd DOUBLE,
+  net_pnl_usd DOUBLE,
+  max_adverse_excursion_usd DOUBLE,
+  max_favorable_excursion_usd DOUBLE,
+  capital_seconds_usd_s DOUBLE,
+  pnl_historical_usd DOUBLE,
+  pnl_current_usd DOUBLE
+) TIMESTAMP(signal_ts_ms) PARTITION BY DAY;

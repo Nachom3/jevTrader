@@ -13,6 +13,7 @@
 pub mod clock;
 pub mod fills;
 pub mod jev_cache;
+pub mod ledger;
 pub mod markouts;
 pub mod portfolio;
 pub mod report;
@@ -25,6 +26,7 @@ pub mod walkforward;
 pub use clock::ReplayClock;
 pub use fills::{ExecutionLatency, FillOutcome, FillSimulator, RestingOrder};
 pub use jev_cache::JevCache;
+pub use ledger::{ExitType, Side, TradeEpisode};
 pub use markouts::{MarkoutHorizons, signed_markouts_pp};
 pub use portfolio::{Portfolio, PortfolioStats};
 pub use report::{
