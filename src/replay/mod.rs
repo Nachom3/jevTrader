@@ -12,6 +12,7 @@
 
 pub mod clock;
 pub mod exits;
+pub mod fees;
 pub mod fills;
 pub mod jev_cache;
 pub mod ledger;
@@ -28,6 +29,10 @@ pub use clock::ReplayClock;
 pub use exits::{
     ExitPolicy, HedgeQuote, MergeResult, hedge_quote, merge_pair, settle_hedge_pair,
     settle_resolution, should_hedge_profit,
+};
+pub use fees::{
+    FeeRegime, apply_to_episode, current_crypto_regime, fee_for_fill, historical_regime,
+    upside_with_rebate, zero_regime,
 };
 pub use fills::{ExecutionLatency, FillOutcome, FillSimulator, RestingOrder};
 pub use jev_cache::JevCache;
