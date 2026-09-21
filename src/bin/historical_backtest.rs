@@ -405,12 +405,13 @@ fn run_corpus<E: JevEvaluator>(
             )
             .unwrap_or_default(),
         );
-        let out = runner.run_events_by_condition(
+        let out = runner.run_events_by_condition_resolved(
             vec![poly_stream, und_stream],
             &[single_map[&condition].clone()],
             &single_map,
             &questions,
             Some(&label_mids),
+            &std::collections::HashMap::new(),
         );
         jev_hits = out.jev_hits;
         jev_misses = out.jev_misses;

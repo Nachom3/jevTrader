@@ -69,6 +69,12 @@ pub struct TradeEpisode {
     pub exit_fill_ts_ms: Option<i64>,
     #[serde(default)]
     pub resolution_at_ms: Option<i64>,
+    /// Explicit YES/NO outcome. `None` is a pending resolution label.
+    #[serde(default)]
+    pub resolution_outcome: Option<String>,
+    /// Evidence lineage for the resolution label (`exact` or `proxy`).
+    #[serde(default)]
+    pub resolution_provenance: Option<String>,
     #[serde(default)]
     pub exit_submit_latency_ms: u64,
     pub gross_pnl_usd: f64,
@@ -182,6 +188,8 @@ impl TradeEpisode {
             exit_arrival_ts_ms: None,
             exit_fill_ts_ms: None,
             resolution_at_ms: None,
+            resolution_outcome: None,
+            resolution_provenance: None,
             exit_submit_latency_ms,
             gross_pnl_usd: 0.0,
             fees_usd: 0.0,
@@ -292,6 +300,42 @@ impl TradeEpisode {
         Ok(())
     }
 
+    /// Records the normalized resolution outcome. A label cannot be attached
+    /// before its timestamp; a timestamp without this field remains pending.
+    pub fn set_resolution_outcome(&mut self, outcome: impl Into<String>) -> Result<(), String> {
+        if self.resolution_at_ms.is_none() {
+            return Err("resolution outcome requires resolution_at_ms".to_owned());
+        }
+        let outcome = outcome.into().to_ascii_lowercase();
+        if outcome != "yes" && outcome != "no" {
+            return Err(format!(
+                "resolution outcome must be yes or no, received {outcome}"
+            ));
+        }
+        self.resolution_outcome = Some(outcome);
+        Ok(())
+    }
+
+    /// Records normalized resolution evidence. This may be omitted while a
+    /// timestamp-only resolution is pending, but a supplied value still needs
+    /// the timestamp it describes.
+    pub fn set_resolution_provenance(
+        &mut self,
+        provenance: impl Into<String>,
+    ) -> Result<(), String> {
+        if self.resolution_at_ms.is_none() {
+            return Err("resolution provenance requires resolution_at_ms".to_owned());
+        }
+        let provenance = provenance.into().to_ascii_lowercase();
+        if provenance != "exact" && provenance != "proxy" {
+            return Err(format!(
+                "resolution provenance must be exact or proxy, received {provenance}"
+            ));
+        }
+        self.resolution_provenance = Some(provenance);
+        Ok(())
+    }
+
     /// Records a terminal exit. `NoFill` leaves fill and exit details empty.
     pub fn apply_exit(
         &mut self,
@@ -310,6 +354,8 @@ impl TradeEpisode {
             self.exit_arrival_ts_ms = None;
             self.exit_fill_ts_ms = None;
             self.resolution_at_ms = None;
+            self.resolution_outcome = None;
+            self.resolution_provenance = None;
             return Ok(());
         }
 

@@ -19,6 +19,7 @@ pub mod ledger;
 pub mod markouts;
 pub mod portfolio;
 pub mod report;
+pub mod resolution;
 pub mod runner;
 pub mod sizing;
 pub mod source;
@@ -42,6 +43,10 @@ pub use markouts::{MarkoutHorizons, signed_markouts_pp};
 pub use portfolio::{Portfolio, PortfolioStats};
 pub use report::{
     ReportRow, SegmentKey, build_report, conditional_markout_5s, write_json, write_markdown,
+};
+pub use resolution::{
+    Provenance, ResolutionOutcome, ResolutionSkip, ResolutionSkipReason, ResolvedMarket,
+    resolve_market,
 };
 pub use runner::{
     ARMS, Arm, JevEvaluator, RawOutcome, RealJev, ReplayConfig, ReplayRunner, RunnerOutput,
