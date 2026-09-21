@@ -12,6 +12,7 @@
 
 pub mod arms;
 pub mod clock;
+pub mod economics;
 pub mod exits;
 pub mod fees;
 pub mod fills;
@@ -32,6 +33,7 @@ pub mod walkforward;
 
 pub use arms::{Arm, ArmPolicy, ArmRun};
 pub use clock::ReplayClock;
+pub use economics::{ExecutionPath, ResolutionTimeFilter, classify_execution, passes, path_of};
 pub use exits::{
     ExitPolicy, HedgeQuote, MergeResult, hedge_quote, merge_pair, settle_hedge_pair,
     settle_resolution, should_hedge_profit,

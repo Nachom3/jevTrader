@@ -72,15 +72,32 @@ pub struct TradeEpisode {
     /// Explicit YES/NO outcome. `None` is a pending resolution label.
     #[serde(default)]
     pub resolution_outcome: Option<String>,
-    /// Evidence lineage for the resolution label (`exact` or `proxy`).
+    /// Legacy evidence lineage for the resolution label (`exact` or `proxy`).
+    ///
+    /// New code uses [`Self::outcome_provenance`] and
+    /// [`Self::resolution_time_provenance`] instead. This field remains
+    /// populated by [`TradeEpisode::set_resolution_provenance`] for legacy
+    /// consumers.
     #[serde(default)]
     pub resolution_provenance: Option<String>,
+    /// Evidence lineage for the resolved YES/NO outcome (`exact` or `proxy`).
+    #[serde(default)]
+    pub outcome_provenance: Option<String>,
+    /// Evidence lineage for the resolution timestamp (`exact` or `proxy`).
+    #[serde(default)]
+    pub resolution_time_provenance: Option<String>,
     /// Fill simulator profile used to produce the fill, set by the replay runner.
     #[serde(default)]
     pub fill_profile: Option<String>,
     /// Whether the recorded fill was attributed to a maker order.
     #[serde(default)]
     pub is_maker: Option<bool>,
+    /// Liquidity role of the entry fill (`maker` or `taker`).
+    #[serde(default)]
+    pub entry_liquidity: Option<String>,
+    /// Liquidity role of the exit fill (`maker` or `taker`).
+    #[serde(default)]
+    pub exit_liquidity: Option<String>,
     /// Fee regime used for the principal accounting view.
     #[serde(default)]
     pub fee_regime: Option<String>,
@@ -211,8 +228,12 @@ impl TradeEpisode {
             resolution_at_ms: None,
             resolution_outcome: None,
             resolution_provenance: None,
+            outcome_provenance: None,
+            resolution_time_provenance: None,
             fill_profile: None,
             is_maker: None,
+            entry_liquidity: None,
+            exit_liquidity: None,
             fee_regime: None,
             hedge_pair_id: None,
             prompt_version: None,
@@ -293,6 +314,30 @@ impl TradeEpisode {
     /// Records whether the fill was attributed to a maker order.
     pub fn set_is_maker(&mut self, is_maker: bool) {
         self.is_maker = Some(is_maker);
+    }
+
+    /// Records and validates the liquidity role of the entry fill.
+    pub fn set_entry_liquidity(&mut self, liquidity: impl Into<String>) -> Result<(), String> {
+        let liquidity = liquidity.into().to_ascii_lowercase();
+        if liquidity != "maker" && liquidity != "taker" {
+            return Err(format!(
+                "entry liquidity must be maker or taker, received {liquidity}"
+            ));
+        }
+        self.entry_liquidity = Some(liquidity);
+        Ok(())
+    }
+
+    /// Records and validates the liquidity role of the exit fill.
+    pub fn set_exit_liquidity(&mut self, liquidity: impl Into<String>) -> Result<(), String> {
+        let liquidity = liquidity.into().to_ascii_lowercase();
+        if liquidity != "maker" && liquidity != "taker" {
+            return Err(format!(
+                "exit liquidity must be maker or taker, received {liquidity}"
+            ));
+        }
+        self.exit_liquidity = Some(liquidity);
+        Ok(())
     }
 
     /// Records the fee regime used for the principal accounting view.
@@ -413,6 +458,45 @@ impl TradeEpisode {
         Ok(())
     }
 
+    /// Records provenance for the resolved YES/NO outcome (`exact` or `proxy`).
+    ///
+    /// This is part of the split provenance pair used by new code; the
+    /// [`Self::resolution_provenance`] field remains the legacy combined field.
+    pub fn set_outcome_provenance(&mut self, provenance: impl Into<String>) -> Result<(), String> {
+        if self.resolution_at_ms.is_none() {
+            return Err("outcome provenance requires resolution_at_ms".to_owned());
+        }
+        let provenance = provenance.into().to_ascii_lowercase();
+        if provenance != "exact" && provenance != "proxy" {
+            return Err(format!(
+                "outcome provenance must be exact or proxy, received {provenance}"
+            ));
+        }
+        self.outcome_provenance = Some(provenance);
+        Ok(())
+    }
+
+    /// Records provenance for the resolution timestamp (`exact` or `proxy`).
+    ///
+    /// This is part of the split provenance pair used by new code; the
+    /// [`Self::resolution_provenance`] field remains the legacy combined field.
+    pub fn set_resolution_time_provenance(
+        &mut self,
+        provenance: impl Into<String>,
+    ) -> Result<(), String> {
+        if self.resolution_at_ms.is_none() {
+            return Err("resolution time provenance requires resolution_at_ms".to_owned());
+        }
+        let provenance = provenance.into().to_ascii_lowercase();
+        if provenance != "exact" && provenance != "proxy" {
+            return Err(format!(
+                "resolution time provenance must be exact or proxy, received {provenance}"
+            ));
+        }
+        self.resolution_time_provenance = Some(provenance);
+        Ok(())
+    }
+
     /// Records a terminal exit. `NoFill` leaves fill and exit details empty.
     pub fn apply_exit(
         &mut self,
@@ -433,6 +517,8 @@ impl TradeEpisode {
             self.resolution_at_ms = None;
             self.resolution_outcome = None;
             self.resolution_provenance = None;
+            self.outcome_provenance = None;
+            self.resolution_time_provenance = None;
             return Ok(());
         }
 
