@@ -6,12 +6,14 @@
 //! Every row carries run_id, pair_id, variant, source=HISTORICAL.
 
 use jevtrader::replay::SyntheticItem;
-use jevtrader::replay::source::{ChunkEventSource, read_market_metas, read_regimes};
+use jevtrader::replay::source::{
+    ChunkEventSource, read_market_metas, read_regimes, read_resolution_specs_end, read_resolutions,
+};
 use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
-    ARMS, Fidelity, HistoricalEvent, JevEvaluator, RealJev, ReplayConfig, ReplayRunner,
-    RunnerOutput, Split, StubJev, V3_ARMS, build_report, read_underlying_window, write_json,
-    write_markdown,
+    ARMS, Fidelity, HistoricalEvent, JevEvaluator, Provenance, RealJev, ReplayConfig, ReplayRunner,
+    ResolutionOutcome, ResolutionSpec, RunnerOutput, Split, StubJev, V3_ARMS, build_report,
+    read_underlying_window, resolve_market, write_json, write_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -189,6 +191,79 @@ fn run_corpus<E: JevEvaluator>(
     if metas.is_empty() {
         return None;
     }
+
+    // Up/down markets are binary YES/NO markets: Up means YES won, while
+    // Down means NO won. Unknown labels are skipped rather than inferred.
+    let resolution_specs_end = read_resolution_specs_end(corpus);
+    let resolution_records = read_resolutions(corpus);
+    let meta_by_resolution: HashMap<String, _> = metas
+        .iter()
+        .map(|meta| (meta.condition_id.clone(), meta))
+        .collect();
+    let mut resolutions_map = HashMap::new();
+    let mut skipped_no_resolution = 0usize;
+    let mut seen_resolution_conditions = std::collections::HashSet::new();
+    for record in resolution_records {
+        if !seen_resolution_conditions.insert(record.condition_id.clone()) {
+            continue;
+        }
+        let Some(meta) = meta_by_resolution.get(&record.condition_id) else {
+            skipped_no_resolution += 1;
+            continue;
+        };
+        if !record.status.eq_ignore_ascii_case("resolved") {
+            skipped_no_resolution += 1;
+            continue;
+        }
+        let outcome = match record.winning_outcome.trim().to_ascii_lowercase().as_str() {
+            "up" | "yes" => Some(ResolutionOutcome::Yes),
+            "down" | "no" => Some(ResolutionOutcome::No),
+            _ => None,
+        };
+        let Some(outcome) = outcome else {
+            skipped_no_resolution += 1;
+            continue;
+        };
+        let (resolution_at_ms, provenance) = if let Some(resolved_at_ms) = record.resolved_ts_ms {
+            (resolved_at_ms, Provenance::Exact)
+        } else if let Some((end_at_ms, _)) = resolution_specs_end.get(&record.condition_id) {
+            (*end_at_ms, Provenance::Proxy)
+        } else {
+            skipped_no_resolution += 1;
+            continue;
+        };
+        let fidelity = resolution_specs_end
+            .get(&record.condition_id)
+            .map_or(meta.fidelity, |(_, fidelity)| *fidelity);
+        let spec = ResolutionSpec {
+            condition_id: record.condition_id.clone(),
+            market_id: meta.market_id.clone(),
+            asset: meta.asset.clone(),
+            horizon: meta.horizon.clone(),
+            resolution_source: String::new(),
+            resolution_rule_excerpt: meta.resolution_rules.clone(),
+            fidelity,
+            resolution_at_ms,
+            reference: None,
+            strike: None,
+            start_at: None,
+            end_at: None,
+        };
+        match resolve_market(&spec, Some(outcome), provenance, true) {
+            Ok(resolved) => {
+                resolutions_map.insert(record.condition_id, resolved);
+            }
+            Err(_) => {
+                skipped_no_resolution += 1;
+            }
+        }
+    }
+    println!(
+        "resolutions_mapped={} skipped_no_resolution={}",
+        resolutions_map.len(),
+        skipped_no_resolution
+    );
+
     let regimes = read_regimes(corpus);
     let tape = ChunkEventSource::new(vec![format!("{corpus}/polymarket_trades.parquet")], 8192)
         .read_parquet_chunks(1_000_000)
@@ -411,7 +486,7 @@ fn run_corpus<E: JevEvaluator>(
             &single_map,
             &questions,
             Some(&label_mids),
-            &std::collections::HashMap::new(),
+            &resolutions_map,
         );
         jev_hits = out.jev_hits;
         jev_misses = out.jev_misses;

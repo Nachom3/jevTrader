@@ -1,6 +1,6 @@
 //! Streaming historical sources. Never loads the full dataset into RAM.
 
-use super::types::HistoricalEvent;
+use super::types::{Fidelity, HistoricalEvent};
 
 /// Pull-based chunk source over processed history.
 pub trait HistoricalSource {
@@ -330,6 +330,50 @@ fn batch_i64(batch: &arrow::array::RecordBatch, name: &str, row: usize) -> Optio
     }
 }
 
+fn parse_timestamp_ms(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("nat") {
+        return None;
+    }
+    if let Ok(value) = raw.parse::<i64>() {
+        let magnitude = value.unsigned_abs();
+        return if magnitude >= 100_000_000_000_000_000 {
+            value.checked_div(1_000_000)
+        } else if magnitude >= 100_000_000_000_000 {
+            value.checked_div(1_000)
+        } else if magnitude >= 100_000_000_000 {
+            Some(value)
+        } else {
+            value.checked_mul(1_000)
+        };
+    }
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|value| value.timestamp_millis())
+}
+
+fn batch_timestamp_ms(batch: &arrow::array::RecordBatch, name: &str, row: usize) -> Option<i64> {
+    use arrow::array::{
+        Array as _, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    };
+
+    if let Some(raw) = batch_str(batch, name, row) {
+        return parse_timestamp_ms(&raw);
+    }
+    let idx = batch.schema().index_of(name).ok()?;
+    let col = batch.column(idx);
+    if let Some(a) = col.as_any().downcast_ref::<TimestampMillisecondArray>() {
+        return (!a.is_null(row)).then(|| a.value(row));
+    }
+    if let Some(a) = col.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+        return (!a.is_null(row)).then(|| a.value(row).checked_div(1_000))?;
+    }
+    if let Some(a) = col.as_any().downcast_ref::<TimestampNanosecondArray>() {
+        return (!a.is_null(row)).then(|| a.value(row).checked_div(1_000_000))?;
+    }
+    batch_i64(batch, name, row).and_then(|value| parse_timestamp_ms(&value.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::types::HistoricalEvent;
@@ -384,6 +428,140 @@ pub struct MarketMeta {
     pub slug: String,
     pub question: String,
     pub resolution_rules: String,
+}
+
+/// One resolution row loaded from the processed corpus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionRecord {
+    pub condition_id: String,
+    pub winning_outcome: String,
+    pub resolved_ts_ms: Option<i64>,
+    pub status: String,
+}
+
+/// Loads the explicit resolution labels from `resolutions.parquet`.
+/// Missing files or malformed batches yield an empty vec. A null/`NaT`
+/// `resolved_ts` remains `None`; the caller decides whether a spec end bound
+/// is an acceptable proxy.
+#[must_use]
+pub fn read_resolutions(processed_dir: &str) -> Vec<ResolutionRecord> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::fs::File;
+
+    let path = format!("{processed_dir}/resolutions.parquet");
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    let projection = parquet::arrow::ProjectionMask::columns(
+        builder.parquet_schema(),
+        [
+            "condition_id",
+            "winning_outcome",
+            "outcome",
+            "resolved_ts",
+            "resolved_at",
+            "resolution_status",
+            "status",
+        ],
+    );
+    let reader = match builder
+        .with_projection(projection)
+        .with_batch_size(8192)
+        .build()
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = match batch {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        for row in 0..batch.num_rows() {
+            let Some(condition_id) = batch_str(&batch, "condition_id", row) else {
+                continue;
+            };
+            out.push(ResolutionRecord {
+                condition_id,
+                winning_outcome: batch_str(&batch, "winning_outcome", row)
+                    .or_else(|| batch_str(&batch, "outcome", row))
+                    .unwrap_or_default(),
+                resolved_ts_ms: batch_timestamp_ms(&batch, "resolved_ts", row)
+                    .or_else(|| batch_timestamp_ms(&batch, "resolved_at", row)),
+                status: batch_str(&batch, "resolution_status", row)
+                    .or_else(|| batch_str(&batch, "status", row))
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    out
+}
+
+/// Loads `(end_at_ms, fidelity)` from `resolution_specs.parquet` without
+/// materializing the other, potentially large, spec columns.
+/// Missing files or rows without a parseable end bound yield an empty map.
+#[must_use]
+pub fn read_resolution_specs_end(
+    processed_dir: &str,
+) -> std::collections::HashMap<String, (i64, Fidelity)> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use std::collections::HashMap;
+    use std::fs::File;
+
+    let path = format!("{processed_dir}/resolution_specs.parquet");
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return HashMap::new(),
+    };
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(file) {
+        Ok(b) => b,
+        Err(_) => return HashMap::new(),
+    };
+    let projection = parquet::arrow::ProjectionMask::columns(
+        builder.parquet_schema(),
+        ["condition_id", "end_at", "resolution_at", "fidelity"],
+    );
+    let reader = match builder
+        .with_projection(projection)
+        .with_batch_size(8192)
+        .build()
+    {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+    let mut out = HashMap::new();
+    for batch in reader {
+        let batch = match batch {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        for row in 0..batch.num_rows() {
+            let (Some(condition_id), Some(end_at_ms)) = (
+                batch_str(&batch, "condition_id", row),
+                batch_timestamp_ms(&batch, "end_at", row)
+                    .or_else(|| batch_timestamp_ms(&batch, "resolution_at", row)),
+            ) else {
+                continue;
+            };
+            let fidelity = match batch_str(&batch, "fidelity", row)
+                .as_deref()
+                .map(str::to_ascii_uppercase)
+                .as_deref()
+            {
+                Some("EXACT") => Fidelity::Exact,
+                Some("PROXY") => Fidelity::Proxy,
+                _ => Fidelity::Unknown,
+            };
+            out.insert(condition_id, (end_at_ms, fidelity));
+        }
+    }
+    out
 }
 
 /// Loads `selected_markets.parquet` joined with `resolution_specs.parquet`
