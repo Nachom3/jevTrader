@@ -51,6 +51,12 @@ impl Provenance {
 pub struct ResolvedMarket {
     pub spec: ResolutionSpec,
     pub outcome: ResolutionOutcome,
+    /// Provenance of the observed outcome.
+    pub outcome_provenance: Provenance,
+    /// Provenance of the timestamp used for replay settlement.
+    pub time_provenance: Provenance,
+    /// Legacy alias for [`Self::outcome_provenance`]. New code should use the
+    /// split provenance fields instead.
     pub provenance: Provenance,
     pub resolved_at_ms: i64,
 }
@@ -87,16 +93,19 @@ pub struct ResolutionSkip {
     pub reason: ResolutionSkipReason,
 }
 
-/// Validates an explicit outcome and timestamp for replay.
+/// Validates outcome and timestamp evidence independently for replay.
 ///
-/// `allow_proxy` is intentionally explicit at the call site: a PROXY label is
-/// never silently admitted just because an outcome is available. EXACT
-/// provenance also cannot be claimed for a non-EXACT fidelity spec.
-pub fn resolve_market(
+/// Outcome provenance is checked against the market fidelity because an exact
+/// outcome cannot be claimed from a proxy-fidelity specification. Timestamp
+/// provenance is governed only by `allow_proxy_time`: a proxy settlement time
+/// can therefore accompany an exact outcome.
+pub fn resolve_market_split(
     spec: &ResolutionSpec,
     outcome: Option<ResolutionOutcome>,
-    provenance: Provenance,
-    allow_proxy: bool,
+    outcome_prov: Provenance,
+    time_prov: Provenance,
+    allow_proxy_outcome: bool,
+    allow_proxy_time: bool,
 ) -> Result<ResolvedMarket, ResolutionSkip> {
     let condition_id = spec.condition_id.clone();
     if spec.condition_id.trim().is_empty() || spec.market_id.trim().is_empty() {
@@ -118,32 +127,54 @@ pub fn resolve_market(
         });
     };
 
-    match provenance {
-        Provenance::Exact if spec.fidelity != Fidelity::Exact => {
-            return Err(ResolutionSkip {
-                condition_id,
-                reason: ResolutionSkipReason::UnreliableFidelity,
-            });
-        }
-        Provenance::Proxy if spec.fidelity == Fidelity::Exact => {
-            return Err(ResolutionSkip {
-                condition_id,
-                reason: ResolutionSkipReason::UnreliableFidelity,
-            });
-        }
-        Provenance::Proxy if !allow_proxy => {
-            return Err(ResolutionSkip {
-                condition_id,
-                reason: ResolutionSkipReason::ProxyNotAllowed,
-            });
-        }
-        Provenance::Exact | Provenance::Proxy => {}
+    if outcome_prov == Provenance::Exact && spec.fidelity != Fidelity::Exact {
+        return Err(ResolutionSkip {
+            condition_id,
+            reason: ResolutionSkipReason::UnreliableFidelity,
+        });
+    }
+    if outcome_prov == Provenance::Proxy && !allow_proxy_outcome {
+        return Err(ResolutionSkip {
+            condition_id,
+            reason: ResolutionSkipReason::ProxyNotAllowed,
+        });
+    }
+    if time_prov == Provenance::Proxy && !allow_proxy_time {
+        return Err(ResolutionSkip {
+            condition_id,
+            reason: ResolutionSkipReason::ProxyNotAllowed,
+        });
     }
 
     Ok(ResolvedMarket {
         spec: spec.clone(),
         outcome,
-        provenance,
+        outcome_provenance: outcome_prov,
+        time_provenance: time_prov,
+        // Keep the pre-split field for callers that still consume the legacy
+        // single-provenance contract.
+        provenance: outcome_prov,
         resolved_at_ms: spec.resolution_at_ms,
     })
+}
+
+/// Compatibility wrapper for the pre-split resolution contract.
+///
+/// New code should call [`resolve_market_split`] so outcome and timestamp
+/// provenance can be admitted independently. The legacy field on the result
+/// remains equal to the outcome provenance.
+pub fn resolve_market(
+    spec: &ResolutionSpec,
+    outcome: Option<ResolutionOutcome>,
+    provenance: Provenance,
+    allow_proxy: bool,
+) -> Result<ResolvedMarket, ResolutionSkip> {
+    resolve_market_split(
+        spec,
+        outcome,
+        provenance,
+        provenance,
+        allow_proxy,
+        allow_proxy,
+    )
 }

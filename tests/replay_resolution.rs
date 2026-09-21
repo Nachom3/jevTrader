@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use jevtrader::replay::resolution::resolve_market_split;
 use jevtrader::replay::{
     Fidelity, HistoricalEvent, Provenance, ReplayConfig, ReplayRunner, ResolutionOutcome,
     ResolutionSkipReason, ResolutionSpec, Side, StubJev, TradeEpisode, resolve_market,
@@ -40,6 +41,53 @@ fn exact_outcome_with_valid_timestamp_resolves() {
     assert_eq!(resolved.outcome, ResolutionOutcome::Yes);
     assert_eq!(resolved.provenance, Provenance::Exact);
     assert_eq!(resolved.resolved_at_ms, 1_000);
+}
+
+#[test]
+fn split_exact_outcome_with_proxy_time_is_allowed() {
+    let resolved = resolve_market_split(
+        &spec("condition-1", "market-1", Fidelity::Exact, 1_000),
+        Some(ResolutionOutcome::Yes),
+        Provenance::Exact,
+        Provenance::Proxy,
+        false,
+        true,
+    )
+    .expect("exact outcome with an explicitly allowed proxy time should resolve");
+
+    assert_eq!(resolved.outcome_provenance, Provenance::Exact);
+    assert_eq!(resolved.time_provenance, Provenance::Proxy);
+    assert_eq!(resolved.provenance, Provenance::Exact);
+}
+
+#[test]
+fn split_proxy_outcome_and_time_require_independent_acceptance() {
+    let skip = resolve_market_split(
+        &spec("condition-1", "market-1", Fidelity::Proxy, 1_000),
+        Some(ResolutionOutcome::No),
+        Provenance::Proxy,
+        Provenance::Proxy,
+        false,
+        false,
+    )
+    .expect_err("proxy outcome and time must be rejected without opt-in");
+
+    assert_eq!(skip.reason, ResolutionSkipReason::ProxyNotAllowed);
+}
+
+#[test]
+fn split_exact_outcome_with_proxy_fidelity_is_unreliable() {
+    let skip = resolve_market_split(
+        &spec("condition-1", "market-1", Fidelity::Proxy, 1_000),
+        Some(ResolutionOutcome::Yes),
+        Provenance::Exact,
+        Provenance::Exact,
+        false,
+        false,
+    )
+    .expect_err("exact outcome cannot use proxy-fidelity evidence");
+
+    assert_eq!(skip.reason, ResolutionSkipReason::UnreliableFidelity);
 }
 
 #[test]

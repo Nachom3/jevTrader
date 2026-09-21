@@ -6,6 +6,7 @@
 //! Every row carries run_id, pair_id, variant, source=HISTORICAL.
 
 use jevtrader::replay::SyntheticItem;
+use jevtrader::replay::resolution::resolve_market_split;
 use jevtrader::replay::source::{
     ChunkEventSource, read_market_metas, read_regimes, read_resolution_specs_end, read_resolutions,
 };
@@ -13,7 +14,7 @@ use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile}
 use jevtrader::replay::{
     ARMS, Fidelity, HistoricalEvent, JevEvaluator, Provenance, RealJev, ReplayConfig, ReplayRunner,
     ResolutionOutcome, ResolutionSpec, RunnerOutput, Split, StubJev, V3_ARMS, build_report,
-    read_underlying_window, resolve_market, write_json, write_markdown,
+    read_underlying_window, write_json, write_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -202,6 +203,8 @@ fn run_corpus<E: JevEvaluator>(
         .collect();
     let mut resolutions_map = HashMap::new();
     let mut skipped_no_resolution = 0usize;
+    let mut exact_time = 0usize;
+    let mut proxy_time = 0usize;
     let mut seen_resolution_conditions = std::collections::HashSet::new();
     for record in resolution_records {
         if !seen_resolution_conditions.insert(record.condition_id.clone()) {
@@ -224,14 +227,15 @@ fn run_corpus<E: JevEvaluator>(
             skipped_no_resolution += 1;
             continue;
         };
-        let (resolution_at_ms, provenance) = if let Some(resolved_at_ms) = record.resolved_ts_ms {
-            (resolved_at_ms, Provenance::Exact)
-        } else if let Some((end_at_ms, _)) = resolution_specs_end.get(&record.condition_id) {
-            (*end_at_ms, Provenance::Proxy)
-        } else {
-            skipped_no_resolution += 1;
-            continue;
-        };
+        let (resolution_at_ms, time_provenance) =
+            if let Some(resolved_at_ms) = record.resolved_ts_ms {
+                (resolved_at_ms, Provenance::Exact)
+            } else if let Some((end_at_ms, _)) = resolution_specs_end.get(&record.condition_id) {
+                (*end_at_ms, Provenance::Proxy)
+            } else {
+                skipped_no_resolution += 1;
+                continue;
+            };
         let fidelity = resolution_specs_end
             .get(&record.condition_id)
             .map_or(meta.fidelity, |(_, fidelity)| *fidelity);
@@ -249,8 +253,19 @@ fn run_corpus<E: JevEvaluator>(
             start_at: None,
             end_at: None,
         };
-        match resolve_market(&spec, Some(outcome), provenance, true) {
+        match resolve_market_split(
+            &spec,
+            Some(outcome),
+            Provenance::Exact,
+            time_provenance,
+            false,
+            true,
+        ) {
             Ok(resolved) => {
+                match resolved.time_provenance {
+                    Provenance::Exact => exact_time += 1,
+                    Provenance::Proxy => proxy_time += 1,
+                }
                 resolutions_map.insert(record.condition_id, resolved);
             }
             Err(_) => {
@@ -259,9 +274,11 @@ fn run_corpus<E: JevEvaluator>(
         }
     }
     println!(
-        "resolutions_mapped={} skipped_no_resolution={}",
+        "resolutions_mapped={} skipped={} exact_time={} proxy_time={}",
         resolutions_map.len(),
-        skipped_no_resolution
+        skipped_no_resolution,
+        exact_time,
+        proxy_time
     );
 
     let regimes = read_regimes(corpus);
