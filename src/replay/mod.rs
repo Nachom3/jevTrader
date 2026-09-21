@@ -17,6 +17,7 @@ pub mod fills;
 pub mod jev_cache;
 pub mod ledger;
 pub mod markouts;
+pub mod metrics;
 pub mod portfolio;
 pub mod regimes;
 pub mod report;
@@ -41,6 +42,7 @@ pub use fills::{ExecutionLatency, FillOutcome, FillSimulator, RestingOrder};
 pub use jev_cache::JevCache;
 pub use ledger::{ExitType, Side, TradeEpisode};
 pub use markouts::{MarkoutHorizons, signed_markouts_pp};
+pub use metrics::{EconomySummary, EpisodeMetricsInput, breakdown_key, summarize, summarize_by};
 pub use portfolio::{Portfolio, PortfolioStats};
 pub use regimes::{
     BASIS_THRESHOLD, BasisBucket, FAR_MINUTES, FlowBucket, MID_MINUTES, NEAR_MINUTES,
