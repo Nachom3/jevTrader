@@ -716,14 +716,20 @@ fn group_pre_grouped<'a>(
                         .push(event.clone());
                 }
                 HistoricalEvent::UnderlyingTick { .. } => {
-                    if !underlying.contains(event) {
-                        underlying.push(event.clone());
-                    }
+                    // Collected verbatim here; exact duplicates collapse in
+                    // the sort+dedup below. A per-push `contains` check would
+                    // be O(n^2) over ~1e5 window ticks and spin forever.
+                    underlying.push(event.clone());
                 }
             }
         }
         grouped.entry(condition_id.clone()).or_default();
     }
+    // Exact duplicates (same tick windowed into several conditions) become
+    // adjacent after the timestamp sort, so `dedup` collapses them in one
+    // linear pass: O(n log n) total instead of O(n^2).
+    underlying.sort_by_key(HistoricalEvent::ts_ms);
+    underlying.dedup();
     append_underlying_and_sort(&mut grouped, &underlying);
     grouped
 }

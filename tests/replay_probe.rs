@@ -116,7 +116,7 @@ fn resolution_ts_presence_lists_timestamped_conditions() {
             without_ts += 1;
         }
     }
-    with_ts.sort_by(|a, b| b.2.cmp(&a.2));
+    with_ts.sort_by_key(|t| std::cmp::Reverse(t.2));
     eprintln!(
         "[replay_probe] with_ts={} without_ts={}",
         with_ts.len(),
