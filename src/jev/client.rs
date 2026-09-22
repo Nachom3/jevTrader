@@ -8,6 +8,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Maximum number of HTTP attempts allowed by the offline precompute path.
 pub const PRECOMPUTE_MAX_ATTEMPTS: u32 = 4;
+/// Hard per-state precompute ceiling, including attempts and retry sleeps.
+/// Each attempt receives only the remaining budget, so no state can occupy a
+/// worker for more than roughly this duration even when every request times out.
+pub const PRECOMPUTE_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
 const PRECOMPUTE_BACKOFF_BASE: Duration = Duration::from_millis(50);
 const PRECOMPUTE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 use thiserror::Error;
@@ -155,8 +159,18 @@ pub async fn evaluate_precompute(
     let mut attempts = Vec::with_capacity(attempts_limit as usize);
 
     for attempt in 1..=attempts_limit {
+        let remaining = PRECOMPUTE_MAX_TOTAL_DURATION.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            let total_duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+            return PrecomputeOutcome::failure(
+                attempts.len() as u32,
+                attempts,
+                total_duration_ms,
+                "precompute total deadline exceeded".to_owned(),
+            );
+        }
         let attempt_started = Instant::now();
-        let result = post(state, questions, api_key, deadline).await;
+        let result = post(state, questions, api_key, deadline.min(remaining)).await;
         let duration_ms = attempt_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         match result {
             Ok((body, sent_at_ms, received_at_ms)) => {
@@ -190,7 +204,18 @@ pub async fn evaluate_precompute(
                         error_text,
                     );
                 }
-                tokio::time::sleep(precompute_retry_delay(attempt)).await;
+                let remaining = PRECOMPUTE_MAX_TOTAL_DURATION.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    let total_duration_ms =
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                    return PrecomputeOutcome::failure(
+                        attempt,
+                        attempts,
+                        total_duration_ms,
+                        "precompute total deadline exceeded".to_owned(),
+                    );
+                }
+                tokio::time::sleep(precompute_retry_delay(attempt).min(remaining)).await;
             }
         }
     }
@@ -208,6 +233,8 @@ pub fn is_precompute_retryable(error: &JevError) -> bool {
 }
 
 /// Exponential backoff with a bounded, time-derived jitter component.
+/// The fixed ceiling prevents a caller-supplied attempt count from creating
+/// unbounded retry delays.
 #[must_use]
 pub fn precompute_retry_delay(attempt: u32) -> Duration {
     let exponent = attempt.saturating_sub(1).min(10);

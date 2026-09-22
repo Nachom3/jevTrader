@@ -43,6 +43,7 @@ const DEFAULT_UNDERLYING: &str = "research-data/processed/underlying_all.parquet
 const DEFAULT_OUT: &str = "research-data/precompute";
 const DEFAULT_RUN_ID: &str = "jev-precompute-v1";
 const MAX_PER_CONDITION_SIGNALS: usize = 8;
+const FLUSH_EVERY_COMPLETED_STATES: usize = 10;
 // Fallback assumption when market metadata has no tick size; affects candidate price only.
 const FALLBACK_TICK_SIZE: f64 = 0.01;
 // Smoke cap only. This is not the preregistered 2,000-5,000 pair target.
@@ -106,7 +107,7 @@ struct TaskResult {
     row: EvalRow,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 struct Counts {
     states: usize,
     eligible_conditions: usize,
@@ -136,6 +137,8 @@ struct Manifest {
     max_states: usize,
     max_states_semantics: &'static str,
     max_live_calls: usize,
+    /// Number of evaluation rows durable in the current partial/final output.
+    persisted_calls: usize,
     /// Number of rows with a parsed evaluation after every source/feature/API skip.
     n_complete_pairs: usize,
     /// Defines `n_complete_pairs` as rows retained after skips with a parsed Jev signal.
@@ -150,6 +153,16 @@ struct Manifest {
     flow_available: bool,
     venue_data_caveat: &'static str,
     underlying_reason: &'static str,
+}
+
+struct FlushContext<'a> {
+    out: &'a Path,
+    cache: &'a Arc<Mutex<JevCache>>,
+    args: &'a Args,
+    pins: &'a VersionPins,
+    input_files: &'a [String],
+    resolution_source: Option<&'static str>,
+    concurrency: usize,
 }
 
 #[tokio::main]
@@ -302,6 +315,17 @@ async fn run() -> Result<(), BoxError> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(8usize)
         .clamp(1, 64);
+    let mut input_files = vec![
+        args.underlying.clone(),
+        format!("{corpus}/selected_markets.parquet"),
+        format!("{corpus}/resolution_specs.parquet"),
+        format!("{corpus}/market_regimes.parquet"),
+    ];
+    if args.tape.is_none() {
+        input_files.push(format!("{corpus}/resolutions.parquet"));
+    }
+    input_files.extend(tape_inputs);
+
     let cache = Arc::new(Mutex::new(JevCache::new()));
     cache
         .lock()
@@ -310,7 +334,16 @@ async fn run() -> Result<(), BoxError> {
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let live_calls = Arc::new(AtomicUsize::new(0));
     let api_key = std::env::var("TYPESAFE_API_KEY").unwrap_or_default();
-    let results: Vec<TaskResult> = stream::iter(prepared.into_iter().map(|item| {
+    let flush_context = FlushContext {
+        out: &args.out,
+        cache: &cache,
+        args: &args,
+        pins: &pins,
+        input_files: &input_files,
+        resolution_source,
+        concurrency,
+    };
+    let mut result_stream = stream::iter(prepared.into_iter().map(|item| {
         process_one(
             item,
             pins.clone(),
@@ -322,43 +355,91 @@ async fn run() -> Result<(), BoxError> {
             args.max_live_calls,
         )
     }))
-    .buffer_unordered(concurrency)
-    .collect()
-    .await;
-    let mut rows: Vec<EvalRow> = results.into_iter().map(|result| result.row).collect();
-    for result in results_from_rows(&rows) {
-        *counts.status.entry(result).or_default() += 1;
+    .buffer_unordered(concurrency);
+    let mut rows = Vec::new();
+    while let Some(result) = result_stream.next().await {
+        let row = result.row;
+        *counts.status.entry(row.status.clone()).or_default() += 1;
+        rows.push(row);
+        if rows.len() % FLUSH_EVERY_COMPLETED_STATES == 0 {
+            counts.live_calls = live_calls.load(Ordering::Relaxed);
+            let _ = flush_progress(&flush_context, &counts, &mut rows)?;
+        }
     }
     counts.live_calls = live_calls.load(Ordering::Relaxed);
+    let manifest = flush_progress(&flush_context, &counts, &mut rows)?;
+    tracing::info!(
+        states = manifest.counts.states,
+        live_calls = manifest.counts.live_calls,
+        cache_hits = manifest.counts.status.get("hit").copied().unwrap_or(0),
+        persisted_calls = manifest.persisted_calls,
+        "precompute complete"
+    );
+    Ok(())
+}
+
+fn flush_progress(
+    context: &FlushContext<'_>,
+    counts: &Counts,
+    rows: &mut [EvalRow],
+) -> Result<Manifest, BoxError> {
     rows.sort_by(|a, b| (a.timestamp, &a.state_hash).cmp(&(b.timestamp, &b.state_hash)));
-    cache.lock().expect("cache mutex").save_to_dir(&args.out)?;
-    write_evaluations(&args.out.join("evaluations.parquet"), &rows)?;
-    let n_complete_pairs = rows.iter().filter(|row| row.signal.is_some()).count();
-    let mut input_files = vec![
-        args.underlying.clone(),
-        format!("{corpus}/selected_markets.parquet"),
-        format!("{corpus}/resolution_specs.parquet"),
-        format!("{corpus}/market_regimes.parquet"),
-    ];
-    if args.tape.is_none() {
-        input_files.push(format!("{corpus}/resolutions.parquet"));
-    }
-    input_files.extend(tape_inputs);
-    let manifest = Manifest {
-        run_id: args.run_id,
+    let manifest = build_manifest(
+        context.args,
+        counts,
+        rows,
+        context.pins,
+        context.input_files,
+        context.resolution_source,
+        context.concurrency,
+    );
+    context
+        .cache
+        .lock()
+        .expect("cache mutex")
+        .save_to_dir(context.out)?;
+    write_evaluations(&context.out.join("evaluations.parquet"), rows)?;
+    fs::write(
+        context.out.join("evaluations.manifest.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    sync_output_dir(context.out);
+    tracing::info!(
+        persisted_calls = manifest.persisted_calls,
+        cache_hits = manifest.counts.status.get("hit").copied().unwrap_or(0),
+        "precompute progress flushed"
+    );
+    Ok(manifest)
+}
+
+fn build_manifest(
+    args: &Args,
+    counts: &Counts,
+    rows: &[EvalRow],
+    pins: &VersionPins,
+    input_files: &[String],
+    resolution_source: Option<&'static str>,
+    concurrency: usize,
+) -> Manifest {
+    Manifest {
+        run_id: args.run_id.clone(),
         live: args.live,
         exact_only: args.exact_only,
         per_condition_signals: args.per_condition,
         max_states: args.max_states,
         max_states_semantics: "Local smoke cap only; not the preregistered 2,000-5,000 complete-pair target.",
         max_live_calls: args.max_live_calls,
-        n_complete_pairs,
+        persisted_calls: rows.len(),
+        n_complete_pairs: rows.iter().filter(|row| row.signal.is_some()).count(),
         n_complete_pairs_semantics: "Rows retained after source/feature skips with a parsed Jev signal; incomplete states and request/parse failures are excluded.",
-        end_boundary_utc_exclusive: args.end_boundary.map(|boundary| boundary.raw),
+        end_boundary_utc_exclusive: args
+            .end_boundary
+            .as_ref()
+            .map(|boundary| boundary.raw.clone()),
         concurrency,
-        counts,
-        version: pins,
-        input_files,
+        counts: counts.clone(),
+        version: pins.clone(),
+        input_files: input_files.to_vec(),
         resolution_source,
         resolution_label_caveat: if args.tape.is_some() {
             "Kachoio outcome is an inferred final-tick label used only as a presence gate; it is not resolution truth or the target value."
@@ -376,17 +457,13 @@ async fn run() -> Result<(), BoxError> {
         } else {
             "underlying_all is registered for the run, but rows are not loaded when the normalized book lacks depth/imbalance evidence"
         },
-    };
-    fs::write(
-        args.out.join("evaluations.manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    tracing::info!(
-        states = manifest.counts.states,
-        live_calls = manifest.counts.live_calls,
-        "precompute complete"
-    );
-    Ok(())
+    }
+}
+
+fn sync_output_dir(out: &Path) {
+    if let Err(error) = File::open(out).and_then(|directory| directory.sync_all()) {
+        tracing::warn!(path = %out.display(), error = %error, "unable to fsync precompute output directory");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -979,12 +1056,11 @@ async fn process_one(
     let mode = CacheMode::from_live(live);
     let key =
         JevCacheKey::new_precompute(item.state_hash.clone(), item.questions_hash.clone(), &pins);
-    if let Some(cached) = cache
-        .lock()
-        .expect("cache mutex")
-        .get(&key)
-        .filter(|cached| cache_entry_matches_mode(cached, mode))
-    {
+    let cached = {
+        let mut cache_guard = cache.lock().expect("cache mutex");
+        cache_guard.get(&key)
+    };
+    if let Some(cached) = cached.filter(|cached| cache_entry_matches_mode(cached, mode)) {
         let metadata = cache
             .lock()
             .expect("cache mutex")
@@ -1194,10 +1270,6 @@ fn status_for_error(error: &str) -> &'static str {
     } else {
         "other"
     }
-}
-
-fn results_from_rows(rows: &[EvalRow]) -> impl Iterator<Item = String> + '_ {
-    rows.iter().map(|row| row.status.clone())
 }
 
 fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
@@ -1429,5 +1501,42 @@ mod tests {
         assert!(!cache_entry_matches_mode(&stub, CacheMode::Live));
         assert!(cache_entry_matches_mode(&live, CacheMode::Live));
         assert!(!cache_entry_matches_mode(&live, CacheMode::Stub));
+    }
+
+    #[test]
+    fn flushed_precompute_key_round_trips_as_a_resume_hit() {
+        let dir = std::env::temp_dir().join(format!(
+            "jevtrader-precompute-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_nanos()
+        ));
+        let pins = VersionPins::current_v1();
+        let key = JevCacheKey::new_precompute(
+            "state-hash".to_owned(),
+            "questions-hash".to_owned(),
+            &pins,
+        );
+        let mut persisted = JevCache::new();
+        persisted.put_precompute(
+            key.clone(),
+            cache_entry(true),
+            CacheEntryMetadata {
+                attempt_count: 1,
+                final_error: None,
+                observed_latency_ms: 7,
+                attempt_durations_ms: vec![7],
+                version: pins,
+            },
+        );
+        assert_eq!(persisted.save_to_dir(&dir).expect("save cache"), 1);
+
+        let mut resumed = JevCache::new();
+        assert_eq!(resumed.load_from_dir(&dir).expect("load cache"), 1);
+        assert!(resumed.get(&key).is_some());
+        assert_eq!(resumed.metadata(&key).expect("metadata").attempt_count, 1);
+        std::fs::remove_dir_all(dir).expect("remove test cache");
     }
 }
