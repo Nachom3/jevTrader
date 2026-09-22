@@ -952,19 +952,39 @@ fn set_resolution_lineage(
     episode.set_resolution_time_provenance(resolved.time_provenance.as_str())
 }
 
+/// Deterministic stratified signal selection: K PolyTrade prints spread
+/// evenly across the trajectory (quantile indices), NOT the first K prints.
+/// Rationale (documented, behavior-neutral to strategy): lead-lag features
+/// need price history to vary; the first K prints have minimal history, so
+/// fixed head-selection would guarantee near-zero quote rates by
+/// construction and test nothing about V1's judgment. Stratification mirrors
+/// the binary's `--stride` semantics. Thresholds, signals and questions are
+/// untouched; only the evaluated timestamps change, deterministically.
 fn fixed_signals(stream: &[HistoricalEvent], limit: usize) -> Vec<SignalPrint> {
-    let mut signals = Vec::new();
-    for (stream_index, event) in stream.iter().enumerate() {
-        if let HistoricalEvent::PolyTrade { ts_ms, .. } = event {
-            if signals.len() >= limit {
-                break;
-            }
-            signals.push(SignalPrint {
-                ts_ms: *ts_ms,
-                ordinal: signals.len(),
-                stream_index,
-            });
-        }
+    let trade_indices: Vec<usize> = stream
+        .iter()
+        .enumerate()
+        .filter_map(|(stream_index, event)| {
+            matches!(event, HistoricalEvent::PolyTrade { .. }).then_some(stream_index)
+        })
+        .collect();
+    if trade_indices.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let take = limit.min(trade_indices.len());
+    let mut signals = Vec::with_capacity(take);
+    for ordinal in 0..take {
+        // Quantile position in [0, len): spreads K signals across the tape.
+        let position = ordinal * trade_indices.len() / take;
+        let stream_index = trade_indices[position];
+        let HistoricalEvent::PolyTrade { ts_ms, .. } = stream[stream_index] else {
+            continue;
+        };
+        signals.push(SignalPrint {
+            ts_ms,
+            ordinal: signals.len(),
+            stream_index,
+        });
     }
     signals
 }
