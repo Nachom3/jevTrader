@@ -33,7 +33,7 @@ use crate::strategy::lead_lag::{LeadLagFeatures, PolySnapshot};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TICK_SIZE: f64 = 0.01;
 const SIZE_STEP: f64 = 0.01;
@@ -44,6 +44,22 @@ const PROMPT_VERSION: &str = "v1-lead-lag";
 const MODEL_VERSION: &str = "jev-latest";
 const QUESTION_SCHEMA_VERSION: &str = "v1";
 const DEFAULT_CACHE_DIR: &str = "research-data/cache";
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+}
+
+fn exit_type_name(exit_type: ExitType) -> &'static str {
+    match exit_type {
+        ExitType::Resolution => "resolution",
+        ExitType::Hedge => "hedge",
+        ExitType::Sell => "sell",
+        ExitType::Stop => "stop",
+        ExitType::NoFill => "no_fill",
+    }
+}
 
 /// Tape grouped by condition, as required by the episode runner.
 pub type TapeByCondition = BTreeMap<String, Vec<HistoricalEvent>>;
@@ -245,6 +261,7 @@ where
     };
     cache.load_from_dir(cache_dir)?;
 
+    let underlying_started = Instant::now();
     let grouped = tape_by_condition.grouped();
     // `CampaignTape` attaches the shared underlying history to each
     // condition so a pre-grouped caller can remain self-contained. Read one
@@ -258,6 +275,7 @@ where
         .cloned()
         .collect();
     underlying.sort_by_key(HistoricalEvent::ts_ms);
+    let underlying_ms = underlying_started.elapsed().as_millis();
 
     let mut output = CampaignOutput {
         episodes: Vec::new(),
@@ -273,6 +291,14 @@ where
     };
 
     for (condition_id, stream) in grouped {
+        eprintln!(
+            "ts_ms={} stage=underlying_done condition={} rows={} ms={}",
+            unix_ms(),
+            condition_id,
+            underlying.len(),
+            underlying_ms,
+        );
+
         let Some(resolved) = resolutions.get(&condition_id) else {
             output.skip_resolution();
             continue;
@@ -289,7 +315,17 @@ where
             continue;
         };
 
-        for signal in fixed_signals(&stream, config.per_condition_signals) {
+        let signals_started = Instant::now();
+        let signals = fixed_signals(&stream, config.per_condition_signals);
+        eprintln!(
+            "ts_ms={} stage=signals condition={} n={} ms={}",
+            unix_ms(),
+            condition_id,
+            signals.len(),
+            signals_started.elapsed().as_millis(),
+        );
+
+        for signal in signals {
             let Some(built) = build_state(&stream, &underlying, &signal, resolved) else {
                 output.skip_data();
                 continue;
@@ -343,12 +379,26 @@ where
                     QUESTION_SCHEMA_VERSION.to_owned(),
                 );
 
-                let outcome = if let Some(cached) = cache.get(&key) {
-                    RawCampaignOutcome {
-                        envelope_json: cached.envelope_json,
-                        latency_ms: cached.latency_ms,
-                        error: None,
-                    }
+                let jev_started = Instant::now();
+                eprintln!(
+                    "ts_ms={} stage=jev_start condition={} arm={} ordinal={} ms={}",
+                    unix_ms(),
+                    condition_id,
+                    arm.as_str(),
+                    signal.ordinal,
+                    jev_started.elapsed().as_millis(),
+                );
+                let (outcome, live, cached) = if let Some(cached) = cache.get(&key) {
+                    let live = cached.live;
+                    (
+                        RawCampaignOutcome {
+                            envelope_json: cached.envelope_json,
+                            latency_ms: cached.latency_ms,
+                            error: None,
+                        },
+                        live,
+                        true,
+                    )
                 } else {
                     if output.jev_calls >= config.max_jev_calls {
                         output.skip_budget();
@@ -373,20 +423,46 @@ where
                                     jev_start_ts_ms: signal.ts_ms,
                                 },
                             );
-                            let _ = live;
-                            RawCampaignOutcome {
-                                envelope_json,
-                                latency_ms,
-                                error: None,
-                            }
+                            (
+                                RawCampaignOutcome {
+                                    envelope_json,
+                                    latency_ms,
+                                    error: None,
+                                },
+                                live,
+                                false,
+                            )
                         }
-                        Err(error) => RawCampaignOutcome {
-                            envelope_json: String::new(),
-                            latency_ms: 0,
-                            error: Some(error),
-                        },
+                        Err(error) => (
+                            RawCampaignOutcome {
+                                envelope_json: String::new(),
+                                latency_ms: 0,
+                                error: Some(error),
+                            },
+                            false,
+                            false,
+                        ),
                     }
                 };
+                eprintln!(
+                    "ts_ms={} stage=jev_done condition={} arm={} ordinal={} latency={} ms={}",
+                    unix_ms(),
+                    condition_id,
+                    arm.as_str(),
+                    signal.ordinal,
+                    outcome.latency_ms,
+                    jev_started.elapsed().as_millis(),
+                );
+                eprintln!(
+                    "ts_ms={} stage=jev_call condition={} arm={} ordinal={} ms={} live={} cached={}",
+                    unix_ms(),
+                    condition_id,
+                    arm.as_str(),
+                    signal.ordinal,
+                    jev_started.elapsed().as_millis(),
+                    live,
+                    cached,
+                );
 
                 output.latencies_ms.push(outcome.latency_ms);
                 if outcome.error.is_some()
@@ -411,6 +487,7 @@ where
                     }
                 };
 
+                let episode_started = Instant::now();
                 let action = V1Strategy
                     .on_market_event(
                         &StrategyContext {
@@ -521,10 +598,21 @@ where
                             continue;
                         }
                     };
+                    let exit = exit_type_name(episode.exit_type);
+                    let episode_ms = episode_started.elapsed().as_millis();
                     output.episodes.push(episode);
                     if let Some(hedge) = hedge {
                         output.episodes.push(hedge);
                     }
+                    eprintln!(
+                        "ts_ms={} stage=episode_done condition={} arm={} ordinal={} exit={} ms={}",
+                        unix_ms(),
+                        condition_id,
+                        arm.as_str(),
+                        signal.ordinal,
+                        exit,
+                        episode_ms,
+                    );
                 } else {
                     episode.apply_exit(
                         ExitType::NoFill,
@@ -532,7 +620,18 @@ where
                         episode.limit_price,
                     )?;
                     apply_no_fill_fees(&mut episode, config)?;
+                    let exit = exit_type_name(episode.exit_type);
+                    let episode_ms = episode_started.elapsed().as_millis();
                     output.episodes.push(episode);
+                    eprintln!(
+                        "ts_ms={} stage=episode_done condition={} arm={} ordinal={} exit={} ms={}",
+                        unix_ms(),
+                        condition_id,
+                        arm.as_str(),
+                        signal.ordinal,
+                        exit,
+                        episode_ms,
+                    );
                 }
             }
         }

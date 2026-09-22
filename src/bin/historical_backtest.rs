@@ -19,7 +19,13 @@ use jevtrader::replay::{
 };
 use std::collections::HashMap;
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+}
 
 fn parse_arg(args: &[String], name: &str, default: &str) -> String {
     let mut out = default.to_owned();
@@ -668,9 +674,14 @@ fn run_campaign(
     exact_only: bool,
     condition_filter: &[String],
 ) -> Result<jevtrader::replay::CampaignOutput, String> {
-    let Some((events, resolutions, questions)) =
-        load_campaign_inputs(corpus, exact_only, condition_filter)
-    else {
+    let inputs_started = Instant::now();
+    let inputs = load_campaign_inputs(corpus, exact_only, condition_filter);
+    let Some((events, resolutions, questions)) = inputs else {
+        eprintln!(
+            "ts_ms={} stage=inputs_done conditions=0 resolutions=0 ms={}",
+            unix_ms(),
+            inputs_started.elapsed().as_millis(),
+        );
         return Ok(jevtrader::replay::CampaignOutput {
             episodes: Vec::new(),
             jev_calls: 0,
@@ -684,6 +695,13 @@ fn run_campaign(
             skipped: 0,
         });
     };
+    eprintln!(
+        "ts_ms={} stage=inputs_done conditions={} resolutions={} ms={}",
+        unix_ms(),
+        events.len(),
+        resolutions.len(),
+        inputs_started.elapsed().as_millis(),
+    );
     run_episode_campaign(config, &events, &resolutions, &questions)
 }
 
@@ -834,6 +852,15 @@ fn main() {
         println!("campaign_jev=LIVE");
         let campaign = run_campaign(&campaign_config, &corpus, exact_only, &condition_filter)
             .unwrap_or_else(|error| panic!("episode campaign failed: {error}"));
+        eprintln!(
+            "ts_ms={} stage=campaign_done episodes={} jev_calls={} hits={} misses={} skipped_total={}",
+            unix_ms(),
+            campaign.episodes.len(),
+            campaign.jev_calls,
+            campaign.jev_hits,
+            campaign.jev_misses,
+            campaign.skipped,
+        );
         let episodes_json =
             serde_json::to_string_pretty(&campaign.episodes).expect("campaign episodes serialize");
         if let Some(parent) = std::path::Path::new(&out).parent() {
