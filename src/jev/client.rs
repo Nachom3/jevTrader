@@ -170,11 +170,8 @@ pub async fn evaluate_precompute(
                     received_at_ms,
                     attempt_count: attempt,
                     attempts,
-                    observed_latency_ms: received_at_ms
-                        .saturating_sub(sent_at_ms)
-                        .max(0) as u64,
-                    total_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128)
-                        as u64,
+                    observed_latency_ms: received_at_ms.saturating_sub(sent_at_ms).max(0) as u64,
+                    total_duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                     final_error: None,
                 };
             }
@@ -220,7 +217,7 @@ pub fn precompute_retry_delay(attempt: u32) -> Duration {
         .saturating_mul(multiplier as u128)
         .min(PRECOMPUTE_BACKOFF_MAX.as_millis()) as u64;
     let jitter_window = (base_ms / 4).max(1);
-    let jitter = (unix_time_ms().unsigned_abs() % (jitter_window + 1)) as u64;
+    let jitter = unix_time_ms().unsigned_abs() % (jitter_window + 1);
     Duration::from_millis(
         base_ms
             .saturating_add(jitter)

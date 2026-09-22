@@ -127,11 +127,7 @@ impl JevCacheKey {
 
     /// Builds a full phase-1 key from the frozen version tuple.
     #[must_use]
-    pub fn new_precompute(
-        state_hash: String,
-        questions_hash: String,
-        pins: &VersionPins,
-    ) -> Self {
+    pub fn new_precompute(state_hash: String, questions_hash: String, pins: &VersionPins) -> Self {
         Self::new_versioned(
             state_hash,
             questions_hash,
@@ -298,10 +294,9 @@ impl JevCache {
         }
         let metadata_path = dir.join("jev_cache_metadata.json");
         if let Ok(metadata_raw) = fs::read_to_string(&metadata_path) {
-            let metadata_rows: Vec<(JevCacheKey, CacheEntryMetadata)> = serde_json::from_str(
-                &metadata_raw,
-            )
-            .map_err(|e| format!("parse jev cache metadata: {e}"))?;
+            let metadata_rows: Vec<(JevCacheKey, CacheEntryMetadata)> =
+                serde_json::from_str(&metadata_raw)
+                    .map_err(|e| format!("parse jev cache metadata: {e}"))?;
             for (key, metadata) in metadata_rows {
                 self.metadata.insert(key, metadata);
             }
