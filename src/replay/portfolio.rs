@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use super::ledger::TradeEpisode;
+
 /// One fill applied to a portfolio.
 #[derive(Debug, Clone, Copy)]
 pub struct FillEvent {
@@ -23,6 +25,12 @@ pub struct Portfolio {
     pub last_mid: Option<f64>,
     pub peak_total: f64,
     pub max_drawdown_pp: f64,
+    /// Compatibility field mirroring `net_cash_pnl_usd`.
+    pub cash_pnl_usd: f64,
+    /// Settled cash PnL before fees and rebates.
+    pub gross_cash_pnl_usd: f64,
+    /// Settled cash PnL after fees and rebates.
+    pub net_cash_pnl_usd: f64,
 }
 
 impl Portfolio {
@@ -38,6 +46,64 @@ impl Portfolio {
     pub fn apply_exit(&mut self, price: f64, size: f64, ts_ms: i64) {
         self.exits.push((price, size, ts_ms));
         let _ = ts_ms;
+    }
+
+    /// Applies one ledger episode without allowing an unfilled episode to
+    /// change cash, inventory, or PnL.
+    pub fn apply_episode(&mut self, episode: &TradeEpisode) {
+        if episode.is_no_fill() {
+            return;
+        }
+
+        let (Some(fill_price), Some(fill_qty), Some(fill_ts_ms)) =
+            (episode.fill_price, episode.fill_qty, episode.fill_ts_ms)
+        else {
+            return;
+        };
+
+        self.apply_fill(FillEvent {
+            price: fill_price,
+            size: fill_qty,
+            ts_ms: fill_ts_ms,
+            toxic: false,
+        });
+
+        if let (Some(exit_price), Some(exit_ts_ms)) = (episode.exit_price, episode.exit_ts_ms) {
+            self.apply_exit(exit_price, fill_qty, exit_ts_ms);
+            let net_pnl_usd = episode.gross_pnl_usd - episode.fees_usd + episode.rebates_usd;
+            self.gross_cash_pnl_usd += episode.gross_pnl_usd;
+            self.net_cash_pnl_usd += net_pnl_usd;
+            self.cash_pnl_usd = self.net_cash_pnl_usd;
+        }
+    }
+
+    /// Net realized cash PnL from settled episodes, after fees and rebates.
+    ///
+    /// This compatibility getter intentionally returns the net stream. Use
+    /// [`Self::gross_cash_pnl_usd`] or [`Self::net_cash_pnl_usd`] when the
+    /// accounting basis must be explicit.
+    #[must_use]
+    pub fn cash_pnl_usd(&self) -> f64 {
+        // The compatibility field is kept synchronized to the net stream.
+        self.cash_pnl_usd
+    }
+
+    /// Gross realized cash PnL from settled episodes, before fees.
+    #[must_use]
+    pub fn gross_cash_pnl_usd(&self) -> f64 {
+        self.gross_cash_pnl_usd
+    }
+
+    /// Net realized cash PnL from settled episodes, after fees and rebates.
+    #[must_use]
+    pub fn net_cash_pnl_usd(&self) -> f64 {
+        self.net_cash_pnl_usd
+    }
+
+    /// Quantity still open after applied exits.
+    #[must_use]
+    pub fn open_qty(&self) -> f64 {
+        self.inventory()
     }
 
     pub fn observe_mid(&mut self, mid: f64) {

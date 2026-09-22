@@ -1,4 +1,5 @@
-// Scaffold: strategy not wired into the engine yet.
+pub mod api;
+
 #[allow(dead_code)]
 pub mod lead_lag;
 
@@ -7,6 +8,9 @@ pub mod quote;
 
 #[allow(dead_code)]
 pub mod risk;
+
+#[allow(dead_code, unused_imports)]
+pub use api::*;
 
 #[allow(dead_code, unused_imports)]
 pub use lead_lag::*;

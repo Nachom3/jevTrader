@@ -5,6 +5,7 @@ use super::fills::{ExecutionLatency, FillSimulator, RestingOrder};
 use super::jev_cache::{CachedJev, JevCache, JevCacheKey};
 use super::markouts::signed_markouts_pp;
 use super::report::ReportRow;
+use super::resolution::ResolvedMarket;
 use super::types::{
     Coverage, Fidelity, FillProfile, HistoricalEvent, LatencyDistribution, LatencyProfile, Split,
 };
@@ -470,6 +471,7 @@ pub struct RunnerOutput {
     pub jev_hits: u64,
     pub jev_misses: u64,
     pub stale_skips: usize,
+    /// Includes event-source skips such as missing books/resolutions.
     pub incomplete_pairs: usize,
     pub jev_errors: usize,
 }
@@ -536,12 +538,12 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         let questions_json = serde_json::to_string(questions).unwrap_or_default();
         let qhash = hash_str(&questions_json);
         let hash = hash_str(&state_json);
-        let key = JevCacheKey {
-            state_hash: hash.clone(),
-            questions_hash: qhash,
-            model: "jev-latest".to_owned(),
-            variant: arm.name.to_owned(),
-        };
+        let key = JevCacheKey::new(
+            hash.clone(),
+            qhash,
+            "jev-latest".to_owned(),
+            arm.name.to_owned(),
+        );
         let outcome = self.cached_or_evaluate(
             &key,
             &state,
@@ -588,6 +590,10 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 envelope_json: outcome.envelope_json.clone(),
                 latency_ms: outcome.latency_ms,
                 live: outcome.live,
+                // Store-time provenance unknown at this layer; populated by live callers (Task 10 wiring).
+                request_json: String::new(),
+                parsed_output_json: String::new(),
+                jev_start_ts_ms: 0,
             },
         );
         outcome
@@ -935,6 +941,8 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                         fill_fraction: 0.0,
                         fill_price: quote_price,
                         profile: self.config.fill,
+                        fill_ts_ms: None,
+                        used_aggressive_qty: 0.0,
                     }
                 };
                 // Markouts from fill price vs backward-sampled future mids.
@@ -1047,32 +1055,28 @@ impl<E: JevEvaluator> ReplayRunner<E> {
     /// synthetic path after normalizing books/underlying at each tick.
     ///
     /// Single-meta legacy path: every Poly event shares `market_meta[0]`.
-    /// Multi-market callers must use [`Self::run_events_by_condition`].
+    /// Multi-market callers must use [`Self::run_events_by_condition_resolved`].
     pub fn run_events(
         &mut self,
         streams: Vec<Vec<HistoricalEvent>>,
         market_meta: &[(String, String, String, Split, Fidelity, String)],
     ) -> RunnerOutput {
-        self.run_events_by_condition(
+        self.run_events_by_condition_resolved(
             streams,
             market_meta,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
             None,
+            &std::collections::HashMap::new(),
         )
     }
 
-    /// Real-event replay with per-event market resolution.
+    /// Legacy real-event replay without explicit resolutions.
     ///
-    /// `meta_by_condition` maps condition_id to its market tuple
-    /// `(market_id, asset, horizon, split, fidelity, regime)`. Poly events
-    /// resolve metadata through their own condition_id; underlying ticks
-    /// only update per-asset spot state and never emit decision items.
-    /// Unmatched Poly events are skipped and counted (never silently
-    /// borrowing another market's metadata). When the map is empty and
-    /// exactly one meta tuple exists, that tuple applies to all Poly
-    /// events (legacy single-market behavior, documented).
-    #[allow(clippy::too_many_lines)]
+    /// This method is retained for callers outside the replay surface. It
+    /// delegates with an empty resolution map, so the stream is explicitly
+    /// skipped rather than receiving an inferred horizon timestamp.
+    #[deprecated(note = "use run_events_by_condition_resolved with explicit resolutions")]
     pub fn run_events_by_condition(
         &mut self,
         streams: Vec<Vec<HistoricalEvent>>,
@@ -1083,6 +1087,41 @@ impl<E: JevEvaluator> ReplayRunner<E> {
         >,
         questions: &std::collections::HashMap<String, (String, String)>,
         label_mids: Option<&[(i64, f64)]>,
+    ) -> RunnerOutput {
+        self.run_events_by_condition_resolved(
+            streams,
+            market_meta,
+            meta_by_condition,
+            questions,
+            label_mids,
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    /// Real-event replay with per-event market metadata and explicit market
+    /// resolutions. A missing resolution skips the stream; no timestamp is
+    /// inferred from the last event or the horizon.
+    ///
+    /// `meta_by_condition` maps condition_id to its market tuple
+    /// `(market_id, asset, horizon, split, fidelity, regime)`. Poly events
+    /// resolve metadata through their own condition_id; underlying ticks
+    /// only update per-asset spot state and never emit decision items.
+    /// Unmatched Poly events are skipped and counted (never silently
+    /// borrowing another market's metadata). When the map is empty and
+    /// exactly one meta tuple exists, that tuple applies to all Poly
+    /// events (legacy single-market behavior, documented).
+    #[allow(clippy::too_many_lines)]
+    pub fn run_events_by_condition_resolved(
+        &mut self,
+        streams: Vec<Vec<HistoricalEvent>>,
+        market_meta: &[(String, String, String, Split, Fidelity, String)],
+        meta_by_condition: &std::collections::HashMap<
+            String,
+            (String, String, String, Split, Fidelity, String),
+        >,
+        questions: &std::collections::HashMap<String, (String, String)>,
+        label_mids: Option<&[(i64, f64)]>,
+        resolutions: &std::collections::HashMap<String, ResolvedMarket>,
     ) -> RunnerOutput {
         // Tag events with their stream index before the merge so books
         // stay per-stream after event-time ordering.
@@ -1097,6 +1136,44 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 .cmp(&b.1.ts_ms())
                 .then_with(|| event_rank(&a.1).cmp(&event_rank(&b.1)))
         });
+        let mut condition_ids = std::collections::BTreeSet::new();
+        for (_, ev) in &tagged {
+            match ev {
+                HistoricalEvent::PolyTop { condition_id, .. }
+                | HistoricalEvent::PolyTrade { condition_id, .. } => {
+                    condition_ids.insert(condition_id.as_str());
+                }
+                HistoricalEvent::UnderlyingTick { .. } => {}
+            }
+        }
+        let mut resolution_at_ms = None;
+        let mut skipped_resolution = 0usize;
+        for condition_id in &condition_ids {
+            let Some(resolved) = resolutions.get(*condition_id) else {
+                skipped_resolution += 1;
+                continue;
+            };
+            if resolved.spec.condition_id != *condition_id || resolved.resolved_at_ms <= 0 {
+                skipped_resolution += 1;
+                continue;
+            }
+            if resolution_at_ms.is_some_and(|existing| existing != resolved.resolved_at_ms) {
+                skipped_resolution += 1;
+            } else {
+                resolution_at_ms = Some(resolved.resolved_at_ms);
+            }
+        }
+        if skipped_resolution > 0 {
+            return RunnerOutput {
+                rows: Vec::new(),
+                signals: Vec::new(),
+                jev_hits: self.cache.hits,
+                jev_misses: self.cache.misses,
+                stale_skips: 0,
+                incomplete_pairs: skipped_resolution,
+                jev_errors: 0,
+            };
+        }
         let mut books: std::collections::HashMap<usize, (f64, f64)> =
             std::collections::HashMap::new();
         let mut spots: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
@@ -1167,14 +1244,16 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 }
                 HistoricalEvent::PolyTrade {
                     condition_id,
-                    price,
                     size,
                     aggressor,
                     ..
                 } => {
-                    let bid = (price - 0.01).clamp(0.0, 1.0);
-                    let ask = (price + 0.01).clamp(0.0, 1.0);
-                    books.insert(*si, (bid, ask));
+                    // A trade has no quote geometry. Inventing a bid/ask
+                    // around it would fabricate a book and therefore fills.
+                    let Some((bid, ask)) = books.get(si).copied() else {
+                        skipped_unmatched += 1;
+                        continue;
+                    };
                     let Some(meta) = resolve_meta(condition_id, market_meta, meta_by_condition)
                     else {
                         skipped_unmatched += 1;
@@ -1200,20 +1279,40 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                 break;
             }
         }
-        let _ = skipped_unmatched;
-        // Resolution follows the market horizon carried by the items
-        // (first item wins; per-condition runs carry a single horizon).
-        let horizon_secs = items
-            .first()
-            .map(|i| horizon_secs(&i.horizon))
-            .unwrap_or(300);
-        let resolution_at_ms = items.last().map_or(0, |i| i.ts_ms) + horizon_secs as i64 * 1000;
-        self.run_synthetic_with(&items, resolution_at_ms, questions, &dense, label_mids)
+        if items.is_empty() {
+            return RunnerOutput {
+                rows: Vec::new(),
+                signals: Vec::new(),
+                jev_hits: self.cache.hits,
+                jev_misses: self.cache.misses,
+                stale_skips: 0,
+                incomplete_pairs: skipped_unmatched,
+                jev_errors: 0,
+            };
+        }
+
+        // Resolution is supplied by the caller and validated before replay;
+        // never derive it from the final event plus the market horizon.
+        let Some(resolution_at_ms) = resolution_at_ms else {
+            return RunnerOutput {
+                rows: Vec::new(),
+                signals: Vec::new(),
+                jev_hits: self.cache.hits,
+                jev_misses: self.cache.misses,
+                stale_skips: 0,
+                incomplete_pairs: 1,
+                jev_errors: 0,
+            };
+        };
+        let mut output =
+            self.run_synthetic_with(&items, resolution_at_ms, questions, &dense, label_mids);
+        output.incomplete_pairs += skipped_unmatched;
+        output
     }
 }
 
 /// Seconds encoded by a horizon tag (`5m`, `15m`, `1h`, `4h`).
-fn horizon_secs(horizon: &str) -> u64 {
+pub fn horizon_secs(horizon: &str) -> u64 {
     match horizon {
         "15m" => 900,
         "1h" => 3600,

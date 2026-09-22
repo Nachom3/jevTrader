@@ -337,7 +337,8 @@ fn event_tags(event: &StorageEvent) -> Option<&ExperimentTags> {
         | StorageEvent::ExternalTick { .. }
         | StorageEvent::NewsItem { .. }
         | StorageEvent::Resolution { .. }
-        | StorageEvent::AbPair { .. } => None,
+        | StorageEvent::AbPair { .. }
+        | StorageEvent::TradeEpisode { .. } => None,
     }
 }
 
@@ -357,6 +358,7 @@ fn table_name(event: &StorageEvent) -> &'static str {
         | StorageEvent::ExternalTick { .. }
         | StorageEvent::NewsItem { .. }
         | StorageEvent::Resolution { .. } => "other",
+        StorageEvent::TradeEpisode { .. } => "trade_episodes",
     }
 }
 

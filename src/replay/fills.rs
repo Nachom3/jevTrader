@@ -3,13 +3,58 @@
 //! The historical tape is mostly trades, not full queue snapshots, so an
 //! exact fill can never be claimed. Every fill records its `fill_model`.
 //!
-//! - OPTIMISTIC: any trade at or through the quote price fills.
-//! - BASE: requires one trade through the level plus resting latency.
-//! - CONSERVATIVE: requires sustained volume through the level AFTER the
-//!   order is resting (execution latency honored), a queue-ahead proxy, and
-//!   partial fills; a single `last_trade == quote` never fills.
+//! Side convention: `RestingOrder::side_buy = true` is a BUY YES maker order.
+//! It is filled by aggressive SELL prints that trade down through the limit.
+//! `side_buy = false` is a SELL/hedge maker order. It is filled by aggressive
+//! BUY prints that trade up through the limit. Unknown aggressors contribute
+//! half volume in either direction.
+//!
+//! - OPTIMISTIC: eligible directional touch or through volume can fill.
+//! - BASE: eligible directional touch or through volume fills proportionally
+//!   after the queue-ahead proxy.
+//! - CONSERVATIVE: requires two distinct directional through prints and
+//!   sustained volume through the level after the order is resting.
+//!
+//! Touches contribute half volume. They can fill OPTIMISTIC and BASE, but a
+//! touch alone never satisfies CONSERVATIVE's two-through-print requirement.
 
 use super::types::FillProfile;
+
+/// The aggressor side reported by a tape print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aggressor {
+    Buy,
+    Sell,
+    Unknown,
+}
+
+/// One tape print used by the maker fill simulator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FillPrint {
+    pub ts_ms: i64,
+    pub price: f64,
+    pub qty: f64,
+    pub aggressor: Aggressor,
+}
+
+impl FillPrint {
+    /// Creates a print, normalizing invalid quantity to zero.
+    #[must_use]
+    pub fn new(ts_ms: i64, price: f64, qty: f64, aggressor: Aggressor) -> Self {
+        Self {
+            ts_ms,
+            price,
+            qty: valid_qty(qty),
+            aggressor,
+        }
+    }
+}
+
+impl From<(i64, f64, f64)> for FillPrint {
+    fn from((ts_ms, price, qty): (i64, f64, f64)) -> Self {
+        Self::new(ts_ms, price, qty, Aggressor::Unknown)
+    }
+}
 
 /// Resting maker order in replay event time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,13 +85,34 @@ pub struct FillOutcome {
     pub fill_fraction: f64,
     pub fill_price: f64,
     pub profile: FillProfile,
+    /// Event-time print that completed the simulated fill, never arrival time.
+    pub fill_ts_ms: Option<i64>,
+    /// Aggressive directional volume consumed by this simulated fill.
+    pub used_aggressive_qty: f64,
 }
 
-/// Tape-fill simulator with explicit queue-ahead proxy.
+impl FillOutcome {
+    #[must_use]
+    pub const fn no_fill(fill_price: f64, profile: FillProfile) -> Self {
+        Self {
+            filled: false,
+            fill_fraction: 0.0,
+            fill_price,
+            profile,
+            fill_ts_ms: None,
+            used_aggressive_qty: 0.0,
+        }
+    }
+}
+
+/// Tape-fill simulator with explicit queue-ahead and through-volume proxies.
 pub struct FillSimulator {
     pub profile: FillProfile,
     /// Shares assumed ahead of us in queue (0..1 of level volume).
     pub queue_ahead: f64,
+    /// Conservative full-fill multiple. The default requires 2x effective
+    /// order size; the half-fill threshold is one quarter of this multiple.
+    pub through_multiple: f64,
 }
 
 impl FillSimulator {
@@ -60,115 +126,249 @@ impl FillSimulator {
         Self {
             profile,
             queue_ahead,
+            through_multiple: 2.0,
         }
     }
 
-    /// Decides a fill for a resting BUY at `order.price` given subsequent
-    /// tape prints strictly after `resting_from_ms + latency`.
+    /// Overrides queue ahead, clamped to the valid `0..=1` range.
+    #[must_use]
+    pub fn with_queue_ahead(mut self, queue_ahead: f64) -> Self {
+        self.queue_ahead = clamp_unit(queue_ahead);
+        self
+    }
+
+    /// Overrides the conservative through-volume sensitivity multiple.
+    #[must_use]
+    pub fn with_through_multiple(mut self, through_multiple: f64) -> Self {
+        self.through_multiple = if through_multiple.is_nan() {
+            2.0
+        } else {
+            through_multiple.max(0.0)
+        };
+        self
+    }
+
+    /// Decides a fill for a resting order given subsequent tape prints.
     ///
-    /// `prints` are `(ts_ms, price, size)` in event-time order. Only prints
-    /// with `ts_ms >= eligible_from_ms` are considered (execution latency).
-    /// Partial fills scale with through-volume net of the queue proxy.
-    pub fn check_fill(
+    /// Only prints with `ts_ms >= resting_from_ms + latency.submit_ms` are
+    /// considered. Prints are consumed in the supplied event-time order; no
+    /// later print is used to change an earlier completion timestamp.
+    ///
+    /// `FillPrint` is the preferred input. The legacy `(ts_ms, price, qty)`
+    /// tuple is also accepted and is treated as an `Unknown` aggressor.
+    pub fn check_fill<P>(
         &self,
         order: &RestingOrder,
-        prints: &[(i64, f64, f64)],
+        prints: &[P],
         latency: ExecutionLatency,
-    ) -> FillOutcome {
-        let eligible_from = order.resting_from_ms + latency.submit_ms as i64;
-        let mut through_vol = 0.0;
-        let mut touched = false;
-        // Distinct prints strictly through the level (below for a BUY).
-        // The conservative model requires sustained evidence, never one print.
+    ) -> FillOutcome
+    where
+        P: Copy + Into<FillPrint>,
+    {
+        let submit_ms = i64::try_from(latency.submit_ms).unwrap_or(i64::MAX);
+        let eligible_from = order.resting_from_ms.saturating_add(submit_ms);
+        let order_size = valid_qty(order.size);
+        if order_size == 0.0 || !order.price.is_finite() {
+            return FillOutcome::no_fill(order.price, self.profile);
+        }
+
+        let mut evidence = Vec::new();
+        let mut directional_available = 0.0;
         let mut through_prints = 0usize;
-        for (ts, price, size) in prints {
-            if *ts < eligible_from {
+
+        for raw_print in prints {
+            let print: FillPrint = (*raw_print).into();
+            if print.ts_ms < eligible_from {
                 continue;
             }
-            if *price <= order.price {
-                touched = true;
-                if *price < order.price {
-                    through_vol += size.max(0.0);
-                    through_prints += 1;
-                } else {
-                    through_vol += size.max(0.0) * 0.5;
-                }
+
+            let aggressor_weight = directional_aggressor_weight(order.side_buy, print.aggressor);
+            if aggressor_weight == 0.0 {
+                continue;
             }
+
+            let Some(price_weight) = price_weight(order, print.price) else {
+                continue;
+            };
+            let contribution = valid_qty(print.qty) * aggressor_weight * price_weight;
+            if contribution == 0.0 {
+                continue;
+            }
+
+            let is_through = price_weight == 1.0 && print.price != order.price;
+            if is_through {
+                through_prints += 1;
+            }
+            directional_available += contribution;
+            evidence.push((print.ts_ms, contribution, is_through));
         }
+
+        let effective_available = after_queue(directional_available, self.queue_ahead);
+        if effective_available <= 0.0 || effective_available.is_nan() {
+            return FillOutcome::no_fill(order.price, self.profile);
+        }
+
         match self.profile {
-            FillProfile::Optimistic => {
-                if touched {
-                    FillOutcome {
-                        filled: true,
-                        fill_fraction: 1.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                } else {
-                    FillOutcome {
-                        filled: false,
-                        fill_fraction: 0.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                }
-            }
-            FillProfile::Base => {
-                if through_vol > 0.0 {
-                    let frac = (through_vol / order.size.max(1e-9)).min(1.0);
-                    FillOutcome {
-                        filled: frac > 0.0,
-                        fill_fraction: frac,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                } else {
-                    FillOutcome {
-                        filled: false,
-                        fill_fraction: 0.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                }
+            FillProfile::Optimistic | FillProfile::Base => {
+                let fill_qty = effective_available.min(order_size);
+                let fill_ts_ms = completion_timestamp_for_fill(
+                    &evidence,
+                    self.queue_ahead,
+                    fill_qty,
+                    effective_available >= order_size,
+                );
+                outcome_from_available(order, self.profile, effective_available, 1.0, fill_ts_ms)
             }
             FillProfile::Conservative => {
-                // Queue proxy: only volume beyond the ahead-queue counts.
-                // At least two distinct through-level prints are required:
-                // one oversized touch is never enough evidence.
                 if through_prints < 2 {
-                    return FillOutcome {
-                        filled: false,
-                        fill_fraction: 0.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    };
+                    return FillOutcome::no_fill(order.price, self.profile);
                 }
-                let effective = through_vol * (1.0 - self.queue_ahead);
-                // Requires at least 2x order size through the level.
-                if effective >= order.size.max(1e-9) * 2.0 {
-                    FillOutcome {
-                        filled: true,
-                        fill_fraction: 1.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                } else if effective >= order.size.max(1e-9) * 0.5 {
-                    FillOutcome {
-                        filled: true,
-                        fill_fraction: 0.5,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
+
+                let full_threshold = order_size * self.through_multiple;
+                let half_threshold = full_threshold * 0.25;
+                let desired_fraction = if effective_available >= full_threshold {
+                    1.0
+                } else if effective_available >= half_threshold {
+                    0.5
                 } else {
-                    FillOutcome {
-                        filled: false,
-                        fill_fraction: 0.0,
-                        fill_price: order.price,
-                        profile: self.profile,
-                    }
-                }
+                    return FillOutcome::no_fill(order.price, self.profile);
+                };
+
+                let fill_ts_ms = completion_timestamp(
+                    &evidence,
+                    self.queue_ahead,
+                    2,
+                    if desired_fraction == 1.0 {
+                        full_threshold
+                    } else {
+                        half_threshold
+                    },
+                );
+                outcome_from_available(
+                    order,
+                    self.profile,
+                    effective_available,
+                    desired_fraction,
+                    fill_ts_ms,
+                )
             }
         }
+    }
+}
+
+fn valid_qty(qty: f64) -> f64 {
+    if qty.is_finite() && qty > 0.0 {
+        qty
+    } else {
+        0.0
+    }
+}
+
+fn clamp_unit(value: f64) -> f64 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
+fn directional_aggressor_weight(side_buy: bool, aggressor: Aggressor) -> f64 {
+    match (side_buy, aggressor) {
+        (true, Aggressor::Sell) | (false, Aggressor::Buy) => 1.0,
+        (_, Aggressor::Unknown) => 0.5,
+        _ => 0.0,
+    }
+}
+
+fn price_weight(order: &RestingOrder, print_price: f64) -> Option<f64> {
+    if order.side_buy {
+        if print_price < order.price {
+            Some(1.0)
+        } else if print_price == order.price {
+            Some(0.5)
+        } else {
+            None
+        }
+    } else if print_price > order.price {
+        Some(1.0)
+    } else if print_price == order.price {
+        Some(0.5)
+    } else {
+        None
+    }
+}
+
+fn after_queue(available: f64, queue_ahead: f64) -> f64 {
+    if available <= 0.0 || queue_ahead >= 1.0 {
+        0.0
+    } else {
+        available * (1.0 - queue_ahead)
+    }
+}
+
+fn completion_timestamp_for_fill(
+    evidence: &[(i64, f64, bool)],
+    queue_ahead: f64,
+    fill_qty: f64,
+    reaches_order_size: bool,
+) -> Option<i64> {
+    if reaches_order_size {
+        completion_timestamp(evidence, queue_ahead, 0, fill_qty)
+    } else {
+        evidence.last().map(|(ts_ms, _, _)| *ts_ms)
+    }
+}
+
+fn completion_timestamp(
+    evidence: &[(i64, f64, bool)],
+    queue_ahead: f64,
+    required_through_prints: usize,
+    threshold: f64,
+) -> Option<i64> {
+    let mut available = 0.0;
+    let mut through_prints = 0usize;
+    for (ts_ms, contribution, is_through) in evidence {
+        available += contribution;
+        if *is_through {
+            through_prints += 1;
+        }
+        if through_prints >= required_through_prints
+            && after_queue(available, queue_ahead) > 0.0
+            && after_queue(available, queue_ahead) >= threshold
+        {
+            return Some(*ts_ms);
+        }
+    }
+    None
+}
+
+fn outcome_from_available(
+    order: &RestingOrder,
+    profile: FillProfile,
+    available: f64,
+    desired_fraction: f64,
+    fill_ts_ms: Option<i64>,
+) -> FillOutcome {
+    let order_size = valid_qty(order.size);
+    let requested_qty = order_size * desired_fraction.min(1.0);
+    let available = if available.is_nan() {
+        0.0
+    } else {
+        available.max(0.0)
+    };
+    let fill_qty = requested_qty.min(available);
+    let fill_fraction = if order_size == 0.0 {
+        0.0
+    } else {
+        (fill_qty / order_size).clamp(0.0, 1.0)
+    };
+    FillOutcome {
+        filled: fill_qty > 0.0,
+        fill_fraction,
+        fill_price: order.price,
+        profile,
+        fill_ts_ms: if fill_qty > 0.0 { fill_ts_ms } else { None },
+        used_aggressive_qty: fill_qty,
     }
 }
 
@@ -193,25 +393,28 @@ mod tests {
             &[(1_100, 0.43, 5.0)],
             ExecutionLatency::new(50),
         );
-        assert!(!out.filled, "last_trade == quote must not fill conserved");
+        assert!(!out.filled, "a touch must not fill conservative by itself");
+        assert_eq!(out.fill_ts_ms, None);
+        assert_eq!(out.used_aggressive_qty, 0.0);
     }
 
     #[test]
-    fn optimistic_fills_on_touch_base_needs_through() {
+    fn optimistic_and_base_accept_directional_touch_volume() {
         let opt = FillSimulator::new(FillProfile::Optimistic);
         let out = opt.check_fill(
             &buy(0.43, 10.0, 1_000),
-            &[(1_100, 0.43, 1.0)],
+            &[FillPrint::new(1_100, 0.43, 1.0, Aggressor::Sell)],
             ExecutionLatency::new(50),
         );
         assert!(out.filled);
+        assert_eq!(out.used_aggressive_qty, 0.5);
+
         let base = FillSimulator::new(FillProfile::Base);
         let out = base.check_fill(
             &buy(0.43, 10.0, 1_000),
             &[(1_100, 0.43, 1.0)],
             ExecutionLatency::new(50),
         );
-        // Touch at level counts half volume -> partial fill in BASE.
         assert!(out.filled);
         assert!(out.fill_fraction < 1.0);
     }
