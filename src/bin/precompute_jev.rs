@@ -8,18 +8,25 @@ use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray, UInt32Ar
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use futures_util::stream::{self, StreamExt};
+use jevtrader::domain::{PriceTicks, TickSize};
+use jevtrader::engine::pipeline::candidate_maker_price;
 use jevtrader::jev::client::{self, PRECOMPUTE_MAX_ATTEMPTS};
-use jevtrader::jev::request::V1State;
+use jevtrader::jev::request::{QuestionSet, V1State};
 use jevtrader::jev::response::{JevEvaluation, parse_evaluation_json};
+use jevtrader::polymarket::OrderBook;
 use jevtrader::replay::jev_cache::{
-    CacheEntryMetadata, CachedJev, JevCache, JevCacheKey, VersionPins,
+    CacheEntryMetadata, CachedJev, JevCache, JevCacheKey, VersionPins, versions::sha256_hex,
 };
 use jevtrader::replay::runner::{JevEvaluator, StubJev};
 use jevtrader::replay::source::{
     ChunkEventSource, MarketMeta, read_market_metas, read_regimes, read_resolution_specs_end,
-    read_resolutions,
+    read_resolutions, read_underlying_window,
 };
 use jevtrader::replay::types::{Fidelity, HistoricalEvent};
+use jevtrader::state::feature_builder::{
+    ContractContext, ExternalTick, OrderFlowAggregates, ResolutionContext, VenueMicroprices,
+    build_features_full,
+};
 use parquet::arrow::ArrowWriter;
 use serde::Serialize;
 use serde_json::Value;
@@ -36,6 +43,8 @@ const DEFAULT_UNDERLYING: &str = "research-data/processed/underlying_all.parquet
 const DEFAULT_OUT: &str = "research-data/precompute";
 const DEFAULT_RUN_ID: &str = "jev-precompute-v1";
 const MAX_PER_CONDITION_SIGNALS: usize = 8;
+// Fallback assumption when market metadata has no tick size; affects candidate price only.
+const FALLBACK_TICK_SIZE: f64 = 0.01;
 // Smoke cap only. This is not the preregistered 2,000-5,000 pair target.
 const DEFAULT_MAX_STATES: &str = "50";
 
@@ -44,6 +53,7 @@ type BoxError = Box<dyn Error + Send + Sync>;
 #[derive(Debug, Clone)]
 struct Args {
     underlying: String,
+    tape: Option<String>,
     out: PathBuf,
     run_id: String,
     per_condition: usize,
@@ -103,6 +113,9 @@ struct Counts {
     incomplete_poly_trade_without_polytop: usize,
     /// Overlapping diagnostic for any candidate without depth/imbalance evidence.
     incomplete_missing_book_geometry: usize,
+    incomplete_short_history: usize,
+    incomplete_null_quote: usize,
+    incomplete_missing_kachoio_outcome: usize,
     incomplete_missing_underlying: usize,
     skipped_invalid_candidate: usize,
     live_calls: usize,
@@ -132,6 +145,10 @@ struct Manifest {
     counts: Counts,
     version: VersionPins,
     input_files: Vec<String>,
+    resolution_source: Option<&'static str>,
+    resolution_label_caveat: &'static str,
+    flow_available: bool,
+    venue_data_caveat: &'static str,
     underlying_reason: &'static str,
 }
 
@@ -161,82 +178,112 @@ async fn run() -> Result<(), BoxError> {
         .unwrap_or_else(|| Path::new("."))
         .display()
         .to_string();
-    let tape_path = format!("{corpus}/polymarket_trades.parquet");
     let metas = read_market_metas(&corpus);
     let specs = read_resolution_specs_end(&corpus);
-    let resolutions = read_resolutions(&corpus);
     let regimes = read_regimes(&corpus);
-    let tape = ChunkEventSource::new(vec![tape_path.clone()], 8192)
-        .read_parquet_chunks(1_000_000)
-        .map_err(|error| format!("read tape: {error}"))?;
+    let market_tick_sizes = read_market_tick_sizes(&corpus);
     let end_boundary_ms = args
         .end_boundary
         .as_ref()
         .map(|boundary| boundary.timestamp_ms);
-    let mut by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
-    for event in tape {
-        if end_boundary_ms.is_some_and(|boundary| event.ts_ms() >= boundary) {
-            continue;
-        }
-        let condition_id = match &event {
-            HistoricalEvent::PolyTrade { condition_id, .. }
-            | HistoricalEvent::PolyTop { condition_id, .. } => condition_id,
-            HistoricalEvent::UnderlyingTick { .. } => continue,
-        };
-        by_condition
-            .entry(condition_id.clone())
-            .or_default()
-            .push(event);
-    }
-    for events in by_condition.values_mut() {
-        events.sort_by_key(HistoricalEvent::ts_ms);
-    }
 
     let mut counts = Counts::default();
     for status in ["ok", "hit", "429", "5xx", "deadline", "other"] {
         counts.status.insert(status.to_owned(), 0);
     }
-    let prepared = Vec::new();
-    for meta in metas
-        .iter()
-        .filter(|meta| eligible(meta, &specs, args.exact_only))
-    {
-        if prepared.len() >= args.max_states {
-            break;
+    let mut prepared = Vec::new();
+    let mut resolution_source = None;
+    let mut tape_inputs = Vec::new();
+    if let Some(tape_path) = args.tape.as_deref() {
+        let tape_path_buf = PathBuf::from(tape_path);
+        let market_files = kachoio_market_files(&tape_path_buf);
+        let outcomes = read_kachoio_outcomes(&market_files)?;
+        let tape = read_kachoio_tape(tape_path)?;
+        prepared = build_tape_prepared(TapeBuildParams {
+            args: &args,
+            metas: &metas,
+            specs: &specs,
+            regimes: &regimes,
+            tape: &tape,
+            outcomes: &outcomes,
+            market_tick_sizes: &market_tick_sizes,
+            underlying_path: &args.underlying,
+            end_boundary_ms,
+            counts: &mut counts,
+        })?;
+        resolution_source = Some("underlying-initial-tick");
+        tape_inputs.push(tape_path.to_owned());
+        tape_inputs.extend(
+            market_files
+                .into_iter()
+                .map(|path| path.display().to_string()),
+        );
+    } else {
+        let tape_path = format!("{corpus}/polymarket_trades.parquet");
+        let resolutions = read_resolutions(&corpus);
+        let tape = ChunkEventSource::new(vec![tape_path.clone()], 8192)
+            .read_parquet_chunks(1_000_000)
+            .map_err(|error| format!("read tape: {error}"))?;
+        let mut by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
+        for event in tape {
+            if end_boundary_ms.is_some_and(|boundary| event.ts_ms() >= boundary) {
+                continue;
+            }
+            let condition_id = match &event {
+                HistoricalEvent::PolyTrade { condition_id, .. }
+                | HistoricalEvent::PolyTop { condition_id, .. } => condition_id,
+                HistoricalEvent::UnderlyingTick { .. } => continue,
+            };
+            by_condition
+                .entry(condition_id.clone())
+                .or_default()
+                .push(event);
         }
-        let Some(events) = by_condition.get(&meta.condition_id) else {
-            continue;
-        };
-        let Some(_resolution_ms) = resolution_time(meta, &resolutions, &specs) else {
-            continue;
-        };
-        counts.eligible_conditions += 1;
-        let first_ts = events.first().map(HistoricalEvent::ts_ms).unwrap_or(0);
-        let condition_regime = regime_at(&regimes, &meta.asset, first_ts);
-        *counts
-            .condition_strata
-            .entry(format!(
-                "{}-{}-{condition_regime}",
-                meta.asset, meta.horizon
-            ))
-            .or_default() += 1;
-        let complete = complete_signal_indices(events, &mut counts);
-        if complete.is_empty() {
-            continue;
+        for events in by_condition.values_mut() {
+            events.sort_by_key(HistoricalEvent::ts_ms);
         }
-        let take = args.per_condition.min(complete.len());
-        let selected: Vec<usize> = (0..take)
-            .map(|ordinal| complete[ordinal * complete.len() / take])
-            .collect();
-        for _index in selected {
+        for meta in metas
+            .iter()
+            .filter(|meta| eligible(meta, &specs, args.exact_only))
+        {
             if prepared.len() >= args.max_states {
                 break;
             }
-            // `HistoricalEvent::PolyTop` currently carries only best bid/ask.
-            // It has no depth or imbalance evidence, so this state is excluded
-            // rather than populated with synthetic book geometry or flow.
-            counts.incomplete_missing_book_geometry += 1;
+            let Some(events) = by_condition.get(&meta.condition_id) else {
+                continue;
+            };
+            let Some(_resolution_ms) = resolution_time(meta, &resolutions, &specs) else {
+                continue;
+            };
+            counts.eligible_conditions += 1;
+            let first_ts = events.first().map(HistoricalEvent::ts_ms).unwrap_or(0);
+            let condition_regime = regime_at(&regimes, &meta.asset, first_ts);
+            *counts
+                .condition_strata
+                .entry(format!(
+                    "{}-{}-{condition_regime}",
+                    meta.asset, meta.horizon
+                ))
+                .or_default() += 1;
+            let complete = complete_signal_indices(events, &mut counts);
+            if complete.is_empty() {
+                continue;
+            }
+            let take = args.per_condition.min(complete.len());
+            let selected: Vec<usize> = (0..take)
+                .map(|ordinal| complete[ordinal * complete.len() / take])
+                .collect();
+            for _index in selected {
+                if prepared.len() >= args.max_states {
+                    break;
+                }
+                // `HistoricalEvent::PolyTop` currently carries only best bid/ask.
+                // It has no depth or imbalance evidence, so this state is excluded
+                // rather than populated with synthetic book geometry or flow.
+                counts.incomplete_missing_book_geometry += 1;
+            }
         }
+        tape_inputs.push(tape_path);
     }
     for key in [
         "BTC-5m", "BTC-15m", "BTC-1h", "BTC-4h", "ETH-5m", "ETH-15m", "ETH-1h", "ETH-4h",
@@ -287,6 +334,16 @@ async fn run() -> Result<(), BoxError> {
     cache.lock().expect("cache mutex").save_to_dir(&args.out)?;
     write_evaluations(&args.out.join("evaluations.parquet"), &rows)?;
     let n_complete_pairs = rows.iter().filter(|row| row.signal.is_some()).count();
+    let mut input_files = vec![
+        args.underlying.clone(),
+        format!("{corpus}/selected_markets.parquet"),
+        format!("{corpus}/resolution_specs.parquet"),
+        format!("{corpus}/market_regimes.parquet"),
+    ];
+    if args.tape.is_none() {
+        input_files.push(format!("{corpus}/resolutions.parquet"));
+    }
+    input_files.extend(tape_inputs);
     let manifest = Manifest {
         run_id: args.run_id,
         live: args.live,
@@ -301,15 +358,24 @@ async fn run() -> Result<(), BoxError> {
         concurrency,
         counts,
         version: pins,
-        input_files: vec![
-            args.underlying,
-            tape_path,
-            format!("{corpus}/selected_markets.parquet"),
-            format!("{corpus}/resolution_specs.parquet"),
-            format!("{corpus}/resolutions.parquet"),
-            format!("{corpus}/market_regimes.parquet"),
-        ],
-        underlying_reason: "underlying_all is registered for the run, but rows are not loaded when the normalized book lacks depth/imbalance evidence",
+        input_files,
+        resolution_source,
+        resolution_label_caveat: if args.tape.is_some() {
+            "Kachoio outcome is an inferred final-tick label used only as a presence gate; it is not resolution truth or the target value."
+        } else {
+            "No Kachoio outcome label is present in the non-tape path."
+        },
+        flow_available: false,
+        venue_data_caveat: if args.tape.is_some() {
+            "Kachoio has no external venue or order-flow data: Coinbase mirrors spot and flow fields are zero/neutral unavailable-data placeholders."
+        } else {
+            "No tape states were prepared; venue and order-flow availability is not applicable."
+        },
+        underlying_reason: if args.tape.is_some() {
+            "underlying_all is window-read per Kachoio condition for LeadLagFeatures"
+        } else {
+            "underlying_all is registered for the run, but rows are not loaded when the normalized book lacks depth/imbalance evidence"
+        },
     };
     fs::write(
         args.out.join("evaluations.manifest.json"),
@@ -321,6 +387,503 @@ async fn run() -> Result<(), BoxError> {
         "precompute complete"
     );
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct TapeRow {
+    ts_ms: i64,
+    yes_bid: Option<f64>,
+    yes_ask: Option<f64>,
+    bid_depth_5c: Option<f64>,
+    mid: Option<f64>,
+}
+
+fn kachoio_market_files(tape_path: &Path) -> Vec<PathBuf> {
+    let raw_dir = tape_path
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("raw/kaggle-kachoio"))
+        .unwrap_or_else(|| PathBuf::from("research-data/raw/kaggle-kachoio"));
+    ["btc_markets.parquet", "eth_markets.parquet"]
+        .into_iter()
+        .map(|name| raw_dir.join(name))
+        .collect()
+}
+
+fn read_kachoio_tape(path: &str) -> Result<HashMap<String, Vec<TapeRow>>, BoxError> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = File::open(path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+        .with_batch_size(8192)
+        .build()?;
+    let mut by_condition: HashMap<String, Vec<TapeRow>> = HashMap::new();
+    for batch in reader {
+        let batch = batch?;
+        for row in 0..batch.num_rows() {
+            let (Some(condition_id), Some(ts_ms)) = (
+                parquet_string(&batch, "condition_id", row).filter(|value| !value.is_empty()),
+                parquet_i64(&batch, "ts_ms", row),
+            ) else {
+                continue;
+            };
+            by_condition.entry(condition_id).or_default().push(TapeRow {
+                ts_ms,
+                yes_bid: parquet_f64(&batch, "yes_bid", row),
+                yes_ask: parquet_f64(&batch, "yes_ask", row),
+                bid_depth_5c: parquet_f64(&batch, "bid_depth_5c", row),
+                mid: parquet_f64(&batch, "mid", row),
+            });
+        }
+    }
+    for rows in by_condition.values_mut() {
+        rows.sort_by_key(|row| row.ts_ms);
+    }
+    Ok(by_condition)
+}
+
+fn read_kachoio_outcomes(paths: &[PathBuf]) -> Result<HashMap<String, String>, BoxError> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let mut outcomes = HashMap::new();
+    let mut opened = 0usize;
+    for path in paths {
+        let Ok(file) = File::open(path) else {
+            continue;
+        };
+        opened += 1;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(8192)
+            .build()?;
+        for batch in reader {
+            let batch = batch?;
+            for row in 0..batch.num_rows() {
+                let (Some(condition_id), Some(outcome)) = (
+                    parquet_string(&batch, "condition_id", row).filter(|value| !value.is_empty()),
+                    parquet_string(&batch, "outcome", row).filter(|value| !value.is_empty()),
+                ) else {
+                    continue;
+                };
+                outcomes.insert(condition_id, outcome);
+            }
+        }
+    }
+    if opened == 0 {
+        return Err("kachoio markets files are missing; expected btc_markets.parquet and eth_markets.parquet".into());
+    }
+    if outcomes.is_empty() {
+        return Err("kachoio markets files contain no condition_id/outcome rows".into());
+    }
+    Ok(outcomes)
+}
+
+fn read_market_tick_sizes(processed_dir: &str) -> HashMap<String, f64> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let path = format!("{processed_dir}/selected_markets.parquet");
+    let Ok(file) = File::open(path) else {
+        return HashMap::new();
+    };
+    let Ok(reader) = ParquetRecordBatchReaderBuilder::try_new(file)
+        .and_then(|builder| builder.with_batch_size(8192).build())
+    else {
+        return HashMap::new();
+    };
+    let mut tick_sizes = HashMap::new();
+    for batch in reader {
+        let Ok(batch) = batch else {
+            continue;
+        };
+        for row in 0..batch.num_rows() {
+            let Some(condition_id) =
+                parquet_string(&batch, "condition_id", row).filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let Some(tick_size) = parquet_positive_f64(&batch, "tick_size", row) else {
+                continue;
+            };
+            tick_sizes.insert(condition_id, tick_size);
+        }
+    }
+    tick_sizes
+}
+
+fn parquet_string(batch: &RecordBatch, name: &str, row: usize) -> Option<String> {
+    use arrow::array::{Array as _, LargeStringArray};
+
+    let index = batch.schema().index_of(name).ok()?;
+    let column = batch.column(index);
+    if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+        return (!values.is_null(row)).then(|| values.value(row).to_owned());
+    }
+    let values = column.as_any().downcast_ref::<LargeStringArray>()?;
+    (!values.is_null(row)).then(|| values.value(row).to_owned())
+}
+
+fn parquet_f64(batch: &RecordBatch, name: &str, row: usize) -> Option<f64> {
+    use arrow::array::Array as _;
+
+    let index = batch.schema().index_of(name).ok()?;
+    let values = batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<Float64Array>()?;
+    (!values.is_null(row)).then(|| values.value(row))
+}
+
+fn parquet_positive_f64(batch: &RecordBatch, name: &str, row: usize) -> Option<f64> {
+    let value = parquet_f64(batch, name, row)
+        .or_else(|| parquet_string(batch, name, row)?.parse::<f64>().ok())?;
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+fn parquet_i64(batch: &RecordBatch, name: &str, row: usize) -> Option<i64> {
+    use arrow::array::Array as _;
+
+    let index = batch.schema().index_of(name).ok()?;
+    let values = batch.column(index).as_any().downcast_ref::<Int64Array>()?;
+    (!values.is_null(row)).then(|| values.value(row))
+}
+
+struct TapeBuildParams<'a> {
+    args: &'a Args,
+    metas: &'a [MarketMeta],
+    specs: &'a HashMap<String, (i64, Fidelity)>,
+    regimes: &'a [(i64, String, String)],
+    tape: &'a HashMap<String, Vec<TapeRow>>,
+    outcomes: &'a HashMap<String, String>,
+    market_tick_sizes: &'a HashMap<String, f64>,
+    underlying_path: &'a str,
+    end_boundary_ms: Option<i64>,
+    counts: &'a mut Counts,
+}
+
+fn build_tape_prepared(params: TapeBuildParams<'_>) -> Result<Vec<Prepared>, BoxError> {
+    let TapeBuildParams {
+        args,
+        metas,
+        specs,
+        regimes,
+        tape,
+        outcomes,
+        market_tick_sizes,
+        underlying_path,
+        end_boundary_ms,
+        counts,
+    } = params;
+    let mut prepared = Vec::new();
+    for meta in metas
+        .iter()
+        .filter(|meta| eligible(meta, specs, args.exact_only))
+    {
+        if prepared.len() >= args.max_states {
+            break;
+        }
+        let Some(rows) = tape.get(&meta.condition_id) else {
+            continue;
+        };
+        if !outcomes.contains_key(&meta.condition_id) {
+            counts.incomplete_missing_kachoio_outcome += 1;
+            continue;
+        }
+        let rows: Vec<TapeRow> = rows
+            .iter()
+            .filter(|row| end_boundary_ms.is_none_or(|boundary| row.ts_ms < boundary))
+            .cloned()
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        counts.eligible_conditions += 1;
+        let first_ts = rows[0].ts_ms;
+        let last_ts = rows.last().map_or(first_ts, |row| row.ts_ms);
+        let condition_regime = regime_at(regimes, &meta.asset, first_ts);
+        *counts
+            .condition_strata
+            .entry(format!(
+                "{}-{}-{condition_regime}",
+                meta.asset, meta.horizon
+            ))
+            .or_default() += 1;
+
+        let mut prices = HashMap::new();
+        for row in &rows {
+            if let Some((_, _, mid)) = tape_quote(row) {
+                prices.insert(row.ts_ms, mid);
+            }
+        }
+        let mut eligible_indices = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            // R3: missing quote columns are unavailable data; skip gracefully rather than impute.
+            if row.yes_bid.is_none() || row.yes_ask.is_none() {
+                counts.incomplete_null_quote += 1;
+                continue;
+            }
+            if tape_quote(row).is_none() {
+                counts.incomplete_null_quote += 1;
+                continue;
+            }
+            // R2: exact lags are intentional because the tape asserts 1s contiguity;
+            // an absent exact observation is skipped rather than fabricated.
+            let complete_history = [1_000_i64, 5_000, 30_000]
+                .into_iter()
+                .all(|lag| prices.contains_key(&(row.ts_ms - lag)));
+            if !complete_history {
+                counts.incomplete_short_history += 1;
+                continue;
+            }
+            eligible_indices.push(index);
+        }
+        if eligible_indices.is_empty() || args.per_condition == 0 {
+            continue;
+        }
+
+        let take = args.per_condition.min(eligible_indices.len());
+        let selected = sample_indices(&eligible_indices, take);
+        let mut underlying = match read_underlying_window(
+            underlying_path,
+            &meta.asset,
+            first_ts.saturating_sub(2 * 3_600_000),
+            last_ts,
+            16,
+            50_000,
+        ) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(asset = %meta.asset, error = %error, "underlying window unavailable");
+                Vec::new()
+            }
+        };
+        let perp_asset = format!("{}-PERP", meta.asset);
+        match read_underlying_window(
+            underlying_path,
+            &perp_asset,
+            first_ts.saturating_sub(2 * 3_600_000),
+            last_ts,
+            16,
+            50_000,
+        ) {
+            Ok(rows) => underlying.extend(rows),
+            Err(error) => {
+                tracing::warn!(asset = %perp_asset, error = %error, "perp window unavailable")
+            }
+        }
+        let mut base_ticks = underlying_ticks(&underlying, &meta.asset);
+        base_ticks.sort_by_key(|tick| tick.ts_ms);
+        if base_ticks.is_empty() {
+            counts.incomplete_missing_underlying += selected.len();
+            continue;
+        }
+        // R1: target is the first underlying tick at/after market start (earliest loaded fallback); Kachoio's inferred final-tick outcome is presence-only.
+        let target = base_ticks
+            .iter()
+            .find(|tick| tick.ts_ms >= first_ts.max(0) as u64)
+            .map_or_else(|| base_ticks[0].price, |tick| tick.price);
+        let resolution_ms = last_ts.saturating_add(1_000);
+
+        for index in selected {
+            if prepared.len() >= args.max_states {
+                break;
+            }
+            let row = &rows[index];
+            let Some((bid, ask, mid)) = tape_quote(row) else {
+                counts.incomplete_null_quote += 1;
+                continue;
+            };
+            let Some(price_1s_ago) = prices.get(&(row.ts_ms - 1_000)).copied() else {
+                counts.incomplete_short_history += 1;
+                continue;
+            };
+            let Some(price_5s_ago) = prices.get(&(row.ts_ms - 5_000)).copied() else {
+                counts.incomplete_short_history += 1;
+                continue;
+            };
+            let Some(price_30s_ago) = prices.get(&(row.ts_ms - 30_000)).copied() else {
+                counts.incomplete_short_history += 1;
+                continue;
+            };
+            let tick_size = market_tick_sizes
+                .get(&meta.condition_id)
+                .copied()
+                .unwrap_or(FALLBACK_TICK_SIZE);
+            let Some(candidate) = candidate_price(bid, ask, TickSize::from_f64(tick_size)) else {
+                counts.skipped_invalid_candidate += 1;
+                continue;
+            };
+            let recent_ticks: Vec<ExternalTick> = base_ticks
+                .iter()
+                .filter(|tick| tick.ts_ms <= row.ts_ms.max(0) as u64)
+                .copied()
+                .collect();
+            let Some(spot) = recent_ticks.last().map(|tick| tick.price) else {
+                counts.incomplete_missing_underlying += 1;
+                continue;
+            };
+            let perp = underlying
+                .iter()
+                .filter_map(|event| match event {
+                    HistoricalEvent::UnderlyingTick {
+                        ts_ms,
+                        asset,
+                        price,
+                        ..
+                    } if asset == &perp_asset
+                        && *ts_ms <= row.ts_ms
+                        && price.is_finite()
+                        && *price > 0.0 =>
+                    {
+                        Some(*price)
+                    }
+                    _ => None,
+                })
+                .next_back()
+                .unwrap_or(spot);
+            let resolution = ResolutionContext::new(
+                target,
+                resolution_ms.saturating_sub(row.ts_ms) as u64 / 1_000,
+                "underlying-initial-tick",
+            );
+            let features = build_features_full(
+                &recent_ticks,
+                &resolution,
+                &ContractContext::new(
+                    meta.asset.clone(),
+                    meta.horizon.clone(),
+                    horizon_seconds(&meta.horizon),
+                ),
+                // R4: Kachoio has no Coinbase feed; coinbase==spot is an
+                // unavailable-data placeholder, not an observed venue value.
+                VenueMicroprices {
+                    binance: spot,
+                    coinbase: spot,
+                    perp,
+                    perp_basis_pct: if spot > 0.0 {
+                        (perp - spot) / spot * 100.0
+                    } else {
+                        0.0
+                    },
+                },
+                // R4: zero flow is unavailable data, not measured neutral flow.
+                OrderFlowAggregates {
+                    buy_vol_1s: 0.0,
+                    sell_vol_1s: 0.0,
+                    ofi_1s: 0.0,
+                    ofi_5s: 0.0,
+                    imbalance: 0.0,
+                    aggressive_buy_ratio: 0.5,
+                },
+            );
+            let poly = jevtrader::strategy::lead_lag::PolySnapshot {
+                yes_bid: PriceTicks::from_f64(bid),
+                yes_ask: PriceTicks::from_f64(ask),
+                bid_depth: row.bid_depth_5c.unwrap_or(0.0).max(0.0),
+                // Kachoio has no ask-side depth. Keep it explicitly empty;
+                // do not fabricate an imbalance from one-sided evidence.
+                ask_depth: 0.0,
+                spread: ask - bid,
+                book_imbalance: 0.0,
+                last_trade_price: PriceTicks::from_f64(mid),
+                price_1s_ago: PriceTicks::from_f64(price_1s_ago),
+                price_5s_ago: PriceTicks::from_f64(price_5s_ago),
+                price_30s_ago: PriceTicks::from_f64(price_30s_ago),
+            };
+            let state = V1State::new(
+                meta.question.clone(),
+                meta.resolution_rules.clone(),
+                features,
+                poly,
+                None,
+                candidate,
+            );
+            let questions = QuestionSet::V1.build(candidate);
+            let state_hash = sha256_hex(&canonical_bytes(&state)?);
+            let questions_hash = sha256_hex(&canonical_bytes(&questions)?);
+            prepared.push(Prepared {
+                timestamp: row.ts_ms,
+                condition_id: meta.condition_id.clone(),
+                state,
+                state_hash,
+                questions,
+                questions_hash,
+                split: meta.split.as_str().to_owned(),
+                fidelity: meta.fidelity.as_str().to_owned(),
+            });
+        }
+    }
+    Ok(prepared)
+}
+
+fn tape_quote(row: &TapeRow) -> Option<(f64, f64, f64)> {
+    let bid = row.yes_bid?;
+    let ask = row.yes_ask?;
+    if !bid.is_finite()
+        || !ask.is_finite()
+        || !(0.0..=1.0).contains(&bid)
+        || !(0.0..=1.0).contains(&ask)
+    {
+        return None;
+    }
+    let mid = row
+        .mid
+        .filter(|value| value.is_finite())
+        .unwrap_or((bid + ask) / 2.0);
+    (0.0..=1.0).contains(&mid).then_some((bid, ask, mid))
+}
+
+fn sample_indices(indices: &[usize], take: usize) -> Vec<usize> {
+    if take == 0 {
+        return Vec::new();
+    }
+    if take == 1 {
+        return vec![indices[indices.len() / 2]];
+    }
+    (0..take)
+        .map(|ordinal| indices[ordinal * (indices.len() - 1) / (take - 1)])
+        .collect()
+}
+
+fn underlying_ticks(events: &[HistoricalEvent], asset: &str) -> Vec<ExternalTick> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            HistoricalEvent::UnderlyingTick {
+                ts_ms,
+                asset: event_asset,
+                price,
+                ..
+            } if event_asset == asset && *ts_ms >= 0 && price.is_finite() && *price > 0.0 => {
+                Some(ExternalTick {
+                    ts_ms: *ts_ms as u64,
+                    price: *price,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn candidate_price(bid: f64, ask: f64, tick_size: TickSize) -> Option<PriceTicks> {
+    if !bid.is_finite() || !ask.is_finite() || bid >= ask {
+        return None;
+    }
+    let mut book = OrderBook::default();
+    book.apply_snapshot(
+        [(PriceTicks::from_f64(bid), 100)],
+        [(PriceTicks::from_f64(ask), 100)],
+    );
+    let candidate = candidate_maker_price(&book, tick_size)?;
+    (candidate < PriceTicks::from_f64(ask)).then_some(candidate)
+}
+
+fn horizon_seconds(horizon: &str) -> u64 {
+    match horizon {
+        "5m" => 300,
+        "15m" => 900,
+        "1h" => 3_600,
+        "4h" => 14_400,
+        _ => 0,
+    }
 }
 
 fn eligible(meta: &MarketMeta, specs: &HashMap<String, (i64, Fidelity)>, exact_only: bool) -> bool {
@@ -810,6 +1373,7 @@ fn parse_args() -> Result<Args, BoxError> {
     }
     Ok(Args {
         underlying: value("--underlying", DEFAULT_UNDERLYING),
+        tape: arg_value(&args, "--tape"),
         out: PathBuf::from(value("--out", DEFAULT_OUT)),
         run_id: value("--run-id", DEFAULT_RUN_ID),
         per_condition,
