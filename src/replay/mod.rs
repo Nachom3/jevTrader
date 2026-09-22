@@ -20,6 +20,7 @@ pub mod fees;
 pub mod fills;
 pub mod jev_cache;
 pub mod ledger;
+pub mod local_harness;
 pub mod markouts;
 pub mod metrics;
 pub mod portfolio;
