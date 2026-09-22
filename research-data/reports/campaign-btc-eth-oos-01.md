@@ -55,3 +55,12 @@ and cache paths are proven by the deterministic checkpoints on fixed signals).
 Do NOT tune thresholds on this sample. Next decisions belong to strategy
 research (question design, trigger selection, or a different edge), not to
 re-measurement.
+
+## Latency profile (recorded per user order: Jev's edge is low latency)
+
+544 live calls, model `jev-1.13.0`, ~1514 input / ~231 output tokens each:
+min 262ms, mean 360ms, max 1378ms. First call per process ~1021ms
+(TLS/handshake), steady-state ~300ms. Suspected client-side overhead
+(new connection per call); a shared keep-alive client may approach the
+documented ~100ms floor. Even at floor, Jev is seconds-scale judgment
+infrastructure (fits +1s/+5s/+30s markout horizons), not microsecond HFT.
