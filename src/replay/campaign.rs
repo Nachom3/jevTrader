@@ -262,19 +262,10 @@ where
     cache.load_from_dir(cache_dir)?;
 
     let underlying_started = Instant::now();
+    // The campaign owns one shared underlying copy plus Poly events grouped by
+    // condition; underlying events are never appended or cloned per condition.
     let grouped = tape_by_condition.grouped();
-    // `CampaignTape` attaches the shared underlying history to each
-    // condition so a pre-grouped caller can remain self-contained. Read one
-    // copy here; concatenating every condition would double-count flow.
-    let mut underlying: Vec<HistoricalEvent> = grouped
-        .values()
-        .next()
-        .into_iter()
-        .flat_map(|events| events.iter())
-        .filter(|event| matches!(event, HistoricalEvent::UnderlyingTick { .. }))
-        .cloned()
-        .collect();
-    underlying.sort_by_key(HistoricalEvent::ts_ms);
+    let underlying = tape_by_condition.underlying();
     let underlying_ms = underlying_started.elapsed().as_millis();
 
     let mut output = CampaignOutput {
@@ -646,18 +637,29 @@ where
 /// Input adapter so callers may pass either a flat historical event slice or
 /// a pre-grouped condition tape.
 pub trait CampaignTape {
+    /// Returns only the Poly event stream for each condition.
     fn grouped(&self) -> TapeByCondition;
+    /// Returns one sorted, deduplicated copy of the shared underlying stream.
+    fn underlying(&self) -> Vec<HistoricalEvent>;
 }
 
 impl CampaignTape for [HistoricalEvent] {
     fn grouped(&self) -> TapeByCondition {
-        group_events(self.iter().cloned())
+        group_events(self.iter())
+    }
+
+    fn underlying(&self) -> Vec<HistoricalEvent> {
+        collect_underlying(self.iter())
     }
 }
 
 impl CampaignTape for Vec<HistoricalEvent> {
     fn grouped(&self) -> TapeByCondition {
-        group_events(self.iter().cloned())
+        group_events(self.iter())
+    }
+
+    fn underlying(&self) -> Vec<HistoricalEvent> {
+        collect_underlying(self.iter())
     }
 }
 
@@ -665,32 +667,36 @@ impl CampaignTape for BTreeMap<String, Vec<HistoricalEvent>> {
     fn grouped(&self) -> TapeByCondition {
         group_pre_grouped(self.iter())
     }
+
+    fn underlying(&self) -> Vec<HistoricalEvent> {
+        collect_underlying_from_groups(self.iter())
+    }
 }
 
 impl CampaignTape for HashMap<String, Vec<HistoricalEvent>> {
     fn grouped(&self) -> TapeByCondition {
         group_pre_grouped(self.iter())
     }
+
+    fn underlying(&self) -> Vec<HistoricalEvent> {
+        collect_underlying_from_groups(self.iter())
+    }
 }
 
-fn group_events(events: impl Iterator<Item = HistoricalEvent>) -> TapeByCondition {
+fn group_events<'a>(events: impl Iterator<Item = &'a HistoricalEvent>) -> TapeByCondition {
     let mut grouped = BTreeMap::new();
-    let mut underlying = Vec::new();
     for event in events {
-        let condition_id = match &event {
+        let condition_id = match event {
             HistoricalEvent::PolyTrade { condition_id, .. }
             | HistoricalEvent::PolyTop { condition_id, .. } => condition_id.clone(),
-            HistoricalEvent::UnderlyingTick { .. } => {
-                underlying.push(event);
-                continue;
-            }
+            HistoricalEvent::UnderlyingTick { .. } => continue,
         };
         grouped
             .entry(condition_id)
             .or_insert_with(Vec::new)
-            .push(event);
+            .push(event.clone());
     }
-    append_underlying_and_sort(&mut grouped, &underlying);
+    sort_grouped(&mut grouped);
     grouped
 }
 
@@ -698,7 +704,6 @@ fn group_pre_grouped<'a>(
     groups: impl Iterator<Item = (&'a String, &'a Vec<HistoricalEvent>)>,
 ) -> TapeByCondition {
     let mut grouped = BTreeMap::new();
-    let mut underlying = Vec::new();
     for (condition_id, events) in groups {
         for event in events {
             match event {
@@ -715,33 +720,39 @@ fn group_pre_grouped<'a>(
                         .or_insert_with(Vec::new)
                         .push(event.clone());
                 }
-                HistoricalEvent::UnderlyingTick { .. } => {
-                    // Collected verbatim here; exact duplicates collapse in
-                    // the sort+dedup below. A per-push `contains` check would
-                    // be O(n^2) over ~1e5 window ticks and spin forever.
-                    underlying.push(event.clone());
-                }
+                HistoricalEvent::UnderlyingTick { .. } => {}
             }
         }
         grouped.entry(condition_id.clone()).or_default();
     }
-    // Exact duplicates (same tick windowed into several conditions) become
-    // adjacent after the timestamp sort, so `dedup` collapses them in one
-    // linear pass: O(n log n) total instead of O(n^2).
-    underlying.sort_by_key(HistoricalEvent::ts_ms);
-    underlying.dedup();
-    append_underlying_and_sort(&mut grouped, &underlying);
+    sort_grouped(&mut grouped);
     grouped
 }
 
-fn append_underlying_and_sort(grouped: &mut TapeByCondition, underlying: &[HistoricalEvent]) {
+fn sort_grouped(grouped: &mut TapeByCondition) {
     for events in grouped.values_mut() {
-        events.extend(underlying.iter().cloned());
         // Stable timestamp ordering preserves source order for equal-time
         // events. The runner's explicit tick/top/trade tie rank is private;
         // the campaign reports that visibility gap rather than copying it.
         events.sort_by_key(HistoricalEvent::ts_ms);
     }
+}
+
+fn collect_underlying<'a>(
+    events: impl Iterator<Item = &'a HistoricalEvent>,
+) -> Vec<HistoricalEvent> {
+    let mut underlying: Vec<&HistoricalEvent> = events
+        .filter(|event| matches!(event, HistoricalEvent::UnderlyingTick { .. }))
+        .collect();
+    underlying.sort_by_key(|event| event.ts_ms());
+    underlying.dedup();
+    underlying.into_iter().cloned().collect()
+}
+
+fn collect_underlying_from_groups<'a>(
+    groups: impl Iterator<Item = (&'a String, &'a Vec<HistoricalEvent>)>,
+) -> Vec<HistoricalEvent> {
+    collect_underlying(groups.flat_map(|(_, events)| events.iter()))
 }
 
 #[derive(Debug)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -7,8 +7,8 @@ use std::sync::{
 
 use jevtrader::replay::resolution::resolve_market_split;
 use jevtrader::replay::{
-    Arm, CampaignConfig, FillProfile, HistoricalEvent, JevCaller, Provenance, ResolutionOutcome,
-    ResolutionSpec, ResolvedMarket, run_episode_campaign_with_caller,
+    Arm, CampaignConfig, CampaignTape, FillProfile, HistoricalEvent, JevCaller, Provenance,
+    ResolutionOutcome, ResolutionSpec, ResolvedMarket, run_episode_campaign_with_caller,
 };
 
 const CONDITION: &str = "condition-1";
@@ -217,6 +217,77 @@ fn quant_only_never_calls_jev() {
     assert_eq!(output.jev_calls, 0);
     assert_eq!(output.jev_hits, 0);
     assert_eq!(output.jev_misses, 0);
+}
+
+#[test]
+fn underlying_not_multiplied() {
+    let shared_tick = HistoricalEvent::UnderlyingTick {
+        ts_ms: 1_000,
+        asset: "BTC".to_owned(),
+        venue: "binance".to_owned(),
+        price: 100.0,
+        bid: Some(99.9),
+        ask: Some(100.1),
+        qty: Some(1.0),
+        aggressor: Some("BUY".to_owned()),
+        source: "fixture".to_owned(),
+    };
+    let tape = BTreeMap::from([
+        (
+            "condition-1".to_owned(),
+            vec![
+                shared_tick.clone(),
+                HistoricalEvent::PolyTrade {
+                    ts_ms: 2_000,
+                    condition_id: "condition-1".to_owned(),
+                    price: 0.45,
+                    size: 1.0,
+                    aggressor: Some("BUY".to_owned()),
+                    direction_quality: "EXACT".to_owned(),
+                    source: "fixture".to_owned(),
+                },
+            ],
+        ),
+        (
+            "condition-2".to_owned(),
+            vec![
+                shared_tick.clone(),
+                HistoricalEvent::PolyTrade {
+                    ts_ms: 2_000,
+                    condition_id: "condition-2".to_owned(),
+                    price: 0.55,
+                    size: 1.0,
+                    aggressor: Some("SELL".to_owned()),
+                    direction_quality: "EXACT".to_owned(),
+                    source: "fixture".to_owned(),
+                },
+            ],
+        ),
+        (
+            "condition-3".to_owned(),
+            vec![
+                shared_tick,
+                HistoricalEvent::PolyTrade {
+                    ts_ms: 2_000,
+                    condition_id: "condition-3".to_owned(),
+                    price: 0.50,
+                    size: 1.0,
+                    aggressor: Some("BUY".to_owned()),
+                    direction_quality: "EXACT".to_owned(),
+                    source: "fixture".to_owned(),
+                },
+            ],
+        ),
+    ]);
+
+    assert_eq!(tape.underlying().len(), 1);
+    for events in tape.grouped().values() {
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, HistoricalEvent::UnderlyingTick { .. }))
+        );
+    }
 }
 
 #[test]
