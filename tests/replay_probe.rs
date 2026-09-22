@@ -3,8 +3,8 @@ use std::fs::File;
 
 use arrow::array::{
     Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
-    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-    TimestampNanosecondArray, TimestampSecondArray, UInt32Array, UInt64Array,
+    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt32Array, UInt64Array,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 

@@ -1312,7 +1312,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
 }
 
 /// Seconds encoded by a horizon tag (`5m`, `15m`, `1h`, `4h`).
-fn horizon_secs(horizon: &str) -> u64 {
+pub fn horizon_secs(horizon: &str) -> u64 {
     match horizon {
         "15m" => 900,
         "1h" => 3600,

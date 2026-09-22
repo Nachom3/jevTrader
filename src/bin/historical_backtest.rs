@@ -12,9 +12,10 @@ use jevtrader::replay::source::{
 };
 use jevtrader::replay::types::{FillProfile, LatencyDistribution, LatencyProfile};
 use jevtrader::replay::{
-    ARMS, Fidelity, HistoricalEvent, JevEvaluator, Provenance, RealJev, ReplayConfig, ReplayRunner,
-    ResolutionOutcome, ResolutionSpec, RunnerOutput, Split, StubJev, V3_ARMS, build_report,
-    read_underlying_window, write_json, write_markdown,
+    ARMS, Arm, CampaignConfig, Fidelity, HistoricalEvent, JevEvaluator, Provenance, RealJev,
+    ReplayConfig, ReplayRunner, ResolutionOutcome, ResolutionSpec, RunnerOutput, Split, StubJev,
+    TapeByCondition, V3_ARMS, build_report, current_crypto_regime, read_underlying_window,
+    run_episode_campaign, write_json, write_markdown, zero_regime,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -293,15 +294,7 @@ fn run_corpus<E: JevEvaluator>(
     // CONDITION below with read_underlying_window (time-bounded, thinned):
     // the merged multi-week file holds ~100M rows, so a global head-read
     // would price April markets with December ticks and blow RAM.
-    let mut poly_by_condition: HashMap<String, Vec<HistoricalEvent>> = HashMap::new();
-    for ev in tape {
-        if let HistoricalEvent::PolyTrade { condition_id, .. } = &ev {
-            poly_by_condition
-                .entry(condition_id.clone())
-                .or_default()
-                .push(ev);
-        }
-    }
+    let poly_by_condition = group_poly_by_condition(tape);
     let meta_by_condition: HashMap<String, (String, String, String, Split, Fidelity, String)> =
         metas
             .iter()
@@ -527,6 +520,173 @@ fn run_corpus<E: JevEvaluator>(
 
 /// Asset-aware backward-only regime lookup: newest regime day at or before
 /// `ts_ms` for `asset` (`BTC` matches `BTCUSDT`). Falls back to UNKNOWN.
+type CampaignInputs = (
+    TapeByCondition,
+    HashMap<String, jevtrader::replay::ResolvedMarket>,
+    HashMap<String, (String, String)>,
+);
+
+fn load_campaign_inputs(
+    corpus: &str,
+    exact_only: bool,
+    condition_filter: &[String],
+) -> Option<CampaignInputs> {
+    let metas = read_market_metas(corpus);
+    if metas.is_empty() {
+        return None;
+    }
+    let metas: Vec<_> = if exact_only {
+        metas
+            .into_iter()
+            .filter(|meta| meta.fidelity == Fidelity::Exact)
+            .collect()
+    } else {
+        metas
+    };
+    let specs = read_resolution_specs_end(corpus);
+    let records = read_resolutions(corpus);
+    let mut resolutions = HashMap::new();
+    let mut questions = HashMap::new();
+    let mut allowed_conditions = std::collections::HashSet::new();
+    for meta in &metas {
+        if !condition_filter.is_empty() && !condition_filter.contains(&meta.condition_id) {
+            continue;
+        }
+        allowed_conditions.insert(meta.condition_id.clone());
+        questions.insert(
+            meta.market_id.clone(),
+            (meta.question.clone(), meta.resolution_rules.clone()),
+        );
+        let Some(record) = records
+            .iter()
+            .find(|record| record.condition_id == meta.condition_id)
+        else {
+            continue;
+        };
+        if !record.status.eq_ignore_ascii_case("resolved") {
+            continue;
+        }
+        let outcome = match record.winning_outcome.trim().to_ascii_lowercase().as_str() {
+            "up" | "yes" => ResolutionOutcome::Yes,
+            "down" | "no" => ResolutionOutcome::No,
+            _ => continue,
+        };
+        let (resolution_at_ms, time_provenance) = if let Some(ts_ms) = record.resolved_ts_ms {
+            (ts_ms, Provenance::Exact)
+        } else if let Some((ts_ms, _)) = specs.get(&meta.condition_id) {
+            (*ts_ms, Provenance::Proxy)
+        } else {
+            continue;
+        };
+        let fidelity = specs
+            .get(&meta.condition_id)
+            .map_or(meta.fidelity, |(_, fidelity)| *fidelity);
+        let spec = ResolutionSpec {
+            condition_id: meta.condition_id.clone(),
+            market_id: meta.market_id.clone(),
+            asset: meta.asset.clone(),
+            horizon: meta.horizon.clone(),
+            resolution_source: String::new(),
+            resolution_rule_excerpt: meta.resolution_rules.clone(),
+            fidelity,
+            resolution_at_ms,
+            reference: None,
+            strike: None,
+            start_at: None,
+            end_at: None,
+        };
+        let Ok(resolved) = resolve_market_split(
+            &spec,
+            Some(outcome),
+            Provenance::Exact,
+            time_provenance,
+            false,
+            true,
+        ) else {
+            continue;
+        };
+        resolutions.insert(meta.condition_id.clone(), resolved);
+    }
+    let tape = ChunkEventSource::new(vec![format!("{corpus}/polymarket_trades.parquet")], 8192)
+        .read_parquet_chunks(1_000_000)
+        .ok()?;
+    let mut tape_by_condition: TapeByCondition = group_poly_by_condition(tape)
+        .into_iter()
+        .filter(|(condition_id, _)| allowed_conditions.contains(condition_id))
+        .collect();
+    if tape_by_condition.is_empty() {
+        return None;
+    }
+
+    // Read only the bounded per-condition windows from the merged underlying
+    // source. The historical campaign never loads that file head-to-tail.
+    let underlying_path = format!("{corpus}/underlying_all.parquet");
+    for meta in &metas {
+        let Some(events) = tape_by_condition.get_mut(&meta.condition_id) else {
+            continue;
+        };
+        let Some(first_ts) = events.iter().map(HistoricalEvent::ts_ms).min() else {
+            continue;
+        };
+        let Some(last_ts) = events.iter().map(HistoricalEvent::ts_ms).max() else {
+            continue;
+        };
+        let lo_ms = first_ts.saturating_sub(2 * 3_600_000);
+        if let Ok(mut rows) =
+            read_underlying_window(&underlying_path, &meta.asset, lo_ms, last_ts, 16, 50_000)
+        {
+            events.append(&mut rows);
+        }
+        let perp_asset = format!("{}-PERP", meta.asset);
+        if let Ok(mut rows) =
+            read_underlying_window(&underlying_path, &perp_asset, lo_ms, last_ts, 16, 50_000)
+        {
+            events.append(&mut rows);
+        }
+    }
+    Some((tape_by_condition, resolutions, questions))
+}
+
+fn group_poly_by_condition(
+    events: impl IntoIterator<Item = HistoricalEvent>,
+) -> HashMap<String, Vec<HistoricalEvent>> {
+    let mut grouped = HashMap::new();
+    for event in events {
+        if let HistoricalEvent::PolyTrade { condition_id, .. } = &event {
+            grouped
+                .entry(condition_id.clone())
+                .or_insert_with(Vec::new)
+                .push(event);
+        }
+    }
+    grouped
+}
+
+fn run_campaign(
+    config: &CampaignConfig,
+    corpus: &str,
+    exact_only: bool,
+    condition_filter: &[String],
+) -> Result<jevtrader::replay::CampaignOutput, String> {
+    let Some((events, resolutions, questions)) =
+        load_campaign_inputs(corpus, exact_only, condition_filter)
+    else {
+        return Ok(jevtrader::replay::CampaignOutput {
+            episodes: Vec::new(),
+            jev_calls: 0,
+            jev_hits: 0,
+            jev_misses: 0,
+            latencies_ms: Vec::new(),
+            skipped_no_resolution: 0,
+            skipped_no_fill_data: 0,
+            skipped_budget: 0,
+            skipped_quant_only: 0,
+            skipped: 0,
+        });
+    };
+    run_episode_campaign(config, &events, &resolutions, &questions)
+}
+
 fn regime_at(regimes: &[(i64, String, String)], asset: &str, ts_ms: i64) -> String {
     let day = ts_ms / 1000 / 86400 * 86400;
     let mut best: Option<&String> = None;
@@ -632,6 +792,69 @@ fn main() {
         .unwrap_or(20);
     // Hard spend guard: live calls never exceed this in one run.
     let max_jev_calls = max_jev_calls.clamp(1, 10_000);
+
+    if parse_arg(&args, "--episode-campaign", "0") == "1" {
+        let campaign_max_calls: usize = parse_arg(&args, "--max-jev-calls", "20")
+            .parse()
+            .unwrap_or(20)
+            .min(10_000);
+        let deadline_ms: u64 = parse_arg(
+            &args,
+            "--jev-deadline-ms",
+            &std::env::var("JEV_DEADLINE_MS").unwrap_or_else(|_| "1500".to_owned()),
+        )
+        .parse()
+        .unwrap_or(1500);
+        let per_condition_signals: usize = parse_arg(&args, "--per-condition-signals", "4")
+            .parse()
+            .unwrap_or(4)
+            .min(1_000);
+        let cache_dir = parse_arg(
+            &args,
+            "--cache-dir",
+            &format!("research-data/cache/{run_id}"),
+        );
+        let campaign_config = CampaignConfig {
+            run_id: run_id.clone(),
+            arms: vec![
+                Arm::QuantOnly,
+                Arm::JevOnly,
+                Arm::QuantPlusJev,
+                Arm::MicroPlusRegime,
+            ],
+            fill_profile: fill,
+            historical_regime: zero_regime(),
+            current_regime: current_crypto_regime(),
+            exit_policy: "HOLD".to_owned(),
+            max_jev_calls: campaign_max_calls,
+            jev_deadline_ms: deadline_ms,
+            cache_dir: cache_dir.clone(),
+            per_condition_signals,
+        };
+        println!("campaign_jev=LIVE");
+        let campaign = run_campaign(&campaign_config, &corpus, exact_only, &condition_filter)
+            .unwrap_or_else(|error| panic!("episode campaign failed: {error}"));
+        let episodes_json =
+            serde_json::to_string_pretty(&campaign.episodes).expect("campaign episodes serialize");
+        if let Some(parent) = std::path::Path::new(&out).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(&out, episodes_json).expect("campaign episodes write");
+        println!(
+            "campaign_episodes={} jev_calls={} jev_hits={} jev_misses={} skipped_res={} skipped_data={} latencies_ms={} out={} cache_dir={}",
+            campaign.episodes.len(),
+            campaign.jev_calls,
+            campaign.jev_hits,
+            campaign.jev_misses,
+            campaign.skipped_no_resolution,
+            campaign.skipped_no_fill_data,
+            campaign.latencies_ms.len(),
+            out,
+            cache_dir,
+        );
+        return;
+    }
+
     let output = if real_jev {
         let api_key = std::env::var("TYPESAFE_API_KEY").unwrap_or_default();
         let deadline_ms: u64 = std::env::var("JEV_DEADLINE_MS")

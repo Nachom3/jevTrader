@@ -12,6 +12,7 @@
 
 pub mod arms;
 pub mod bootstrap;
+pub mod campaign;
 pub mod clock;
 pub mod economics;
 pub mod exits;
@@ -36,6 +37,10 @@ pub use arms::{Arm, ArmPolicy, ArmRun};
 pub use bootstrap::{
     Block, BlockBootstrap, BlockId, BootstrapSummary, OosHeadline, OosReport, oos_report,
     oos_report_with_draws, summarize_distribution,
+};
+pub use campaign::{
+    CampaignConfig, CampaignOutput, CampaignTape, JevCaller, LiveJevCaller, TapeByCondition,
+    run_episode_campaign, run_episode_campaign_with_caller,
 };
 pub use clock::ReplayClock;
 pub use economics::{ExecutionPath, ResolutionTimeFilter, classify_execution, passes, path_of};
