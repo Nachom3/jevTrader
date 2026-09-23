@@ -16,6 +16,7 @@ odd/
 
 # Historical research data (never commit datasets)
 research-data/raw/
+research-data/cache/
 research-data/processed/*.parquet
 research-data/processed/*.csv
 research-data/reports/*.json
