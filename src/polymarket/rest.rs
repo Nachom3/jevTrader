@@ -95,12 +95,12 @@ pub async fn fetch_market_by_slug(
         market: market_name.clone(),
         field: "outcomes",
     })?;
-    let yes_index = outcomes
-        .iter()
-        .position(|outcome| outcome.eq_ignore_ascii_case("yes"));
-    let no_index = outcomes
-        .iter()
-        .position(|outcome| outcome.eq_ignore_ascii_case("no"));
+    let yes_index = outcomes.iter().position(|outcome| {
+        outcome.eq_ignore_ascii_case("yes") || outcome.eq_ignore_ascii_case("up")
+    });
+    let no_index = outcomes.iter().position(|outcome| {
+        outcome.eq_ignore_ascii_case("no") || outcome.eq_ignore_ascii_case("down")
+    });
     let (yes_index, no_index) = match (yes_index, no_index) {
         (Some(yes), Some(no)) if yes != no => (yes, no),
         _ => {

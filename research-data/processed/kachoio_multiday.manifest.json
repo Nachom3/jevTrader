@@ -1,0 +1,2370 @@
+{
+  "date_column": "date",
+  "date_column_timezone": "UTC",
+  "days": {
+    "2026-03-24": {
+      "BTC": {
+        "markets": {
+          "candidate": 22,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 22
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 6600,
+          "matching_market_ticks": 6600,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 6600
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-25": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-26": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-27": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-28": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-29": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-30": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-03-31": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-04-01": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-04-02": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-04-03": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-04-04": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 0,
+          "drop_reasons": {},
+          "dropped": 0,
+          "kept": 0
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 0,
+          "matching_market_ticks": 0,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 0
+        }
+      }
+    },
+    "2026-04-05": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 55,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 55
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 16500,
+          "matching_market_ticks": 16500,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 16500
+        }
+      }
+    },
+    "2026-04-06": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-07": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-08": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-09": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 293,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86393,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86393
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 293,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86393,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86393
+        }
+      }
+    },
+    "2026-04-10": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-11": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-12": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-13": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-14": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-15": {
+      "BTC": {
+        "markets": {
+          "candidate": 286,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 286
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 85800,
+          "matching_market_ticks": 85800,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 85800
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 286,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 286
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 85800,
+          "matching_market_ticks": 85800,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 85800
+        }
+      }
+    },
+    "2026-04-16": {
+      "BTC": {
+        "markets": {
+          "candidate": 286,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 286
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 85800,
+          "matching_market_ticks": 85800,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 85800
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 285,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 285
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 85500,
+          "matching_market_ticks": 85500,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 85500
+        }
+      }
+    },
+    "2026-04-17": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-18": {
+      "BTC": {
+        "markets": {
+          "candidate": 273,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 273
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 81900,
+          "matching_market_ticks": 81900,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 81900
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 273,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 273
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 81900,
+          "matching_market_ticks": 81900,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 81900
+        }
+      }
+    },
+    "2026-04-19": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-20": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-21": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-22": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 230,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86330,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86330
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 230,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86330,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86330
+        }
+      }
+    },
+    "2026-04-23": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-24": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-25": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-26": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-27": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-28": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 1201
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 1201,
+          "dropped_out_of_window": 0,
+          "kept": 85199,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-29": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-04-30": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-01": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-02": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-03": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 295,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86395,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86395
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "incomplete_1s_tick_window": 1,
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 1,
+          "kept": 287
+        },
+        "rows": {
+          "dropped_incomplete_market": 298,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86100,
+          "matching_market_ticks": 86398,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86398
+        }
+      }
+    },
+    "2026-05-04": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-05": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-06": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-07": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-08": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-09": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-10": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-11": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-12": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-13": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-14": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-15": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-16": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-17": {
+      "BTC": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 288,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 288
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 86400,
+          "matching_market_ticks": 86400,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 86400
+        }
+      }
+    },
+    "2026-05-18": {
+      "BTC": {
+        "markets": {
+          "candidate": 127,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 127
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 38100,
+          "matching_market_ticks": 38100,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 38100
+        }
+      },
+      "ETH": {
+        "markets": {
+          "candidate": 127,
+          "drop_reasons": {
+            "null_yes_bid_or_ask": 0
+          },
+          "dropped": 0,
+          "kept": 127
+        },
+        "rows": {
+          "dropped_incomplete_market": 0,
+          "dropped_null_quotes": 0,
+          "dropped_out_of_window": 0,
+          "kept": 38100,
+          "matching_market_ticks": 38100,
+          "null_quotes_in_incomplete_markets": 0,
+          "raw_tick_rows": 38100
+        }
+      }
+    }
+  },
+  "fidelity": "EXACT",
+  "horizon_scope": [
+    "5m"
+  ],
+  "input_tick_date_coverage": {
+    "BTC": {
+      "2026-03-24": 6600,
+      "2026-03-25": 86400,
+      "2026-03-26": 86400,
+      "2026-03-27": 86400,
+      "2026-03-28": 86400,
+      "2026-03-29": 86400,
+      "2026-03-30": 86400,
+      "2026-03-31": 86400,
+      "2026-04-01": 86400,
+      "2026-04-02": 86400,
+      "2026-04-03": 86400,
+      "2026-04-04": 86400,
+      "2026-04-05": 86400,
+      "2026-04-06": 86400,
+      "2026-04-07": 86400,
+      "2026-04-08": 86400,
+      "2026-04-09": 86393,
+      "2026-04-10": 86400,
+      "2026-04-11": 86400,
+      "2026-04-12": 86400,
+      "2026-04-13": 86400,
+      "2026-04-14": 86400,
+      "2026-04-15": 85800,
+      "2026-04-16": 85800,
+      "2026-04-17": 86400,
+      "2026-04-18": 81900,
+      "2026-04-19": 86400,
+      "2026-04-20": 86400,
+      "2026-04-21": 86400,
+      "2026-04-22": 86330,
+      "2026-04-23": 86400,
+      "2026-04-24": 86400,
+      "2026-04-25": 86400,
+      "2026-04-26": 86400,
+      "2026-04-27": 86400,
+      "2026-04-28": 86400,
+      "2026-04-29": 86400,
+      "2026-04-30": 86400,
+      "2026-05-01": 86400,
+      "2026-05-02": 86400,
+      "2026-05-03": 86395,
+      "2026-05-04": 86400,
+      "2026-05-05": 86400,
+      "2026-05-06": 86400,
+      "2026-05-07": 86400,
+      "2026-05-08": 86400,
+      "2026-05-09": 86400,
+      "2026-05-10": 86400,
+      "2026-05-11": 86400,
+      "2026-05-12": 86400,
+      "2026-05-13": 86400,
+      "2026-05-14": 86400,
+      "2026-05-15": 86400,
+      "2026-05-16": 86400,
+      "2026-05-17": 86400,
+      "2026-05-18": 38100
+    },
+    "ETH": {
+      "2026-04-05": 16500,
+      "2026-04-06": 86400,
+      "2026-04-07": 86400,
+      "2026-04-08": 86400,
+      "2026-04-09": 86393,
+      "2026-04-10": 86400,
+      "2026-04-11": 86400,
+      "2026-04-12": 86400,
+      "2026-04-13": 86400,
+      "2026-04-14": 86400,
+      "2026-04-15": 85800,
+      "2026-04-16": 85500,
+      "2026-04-17": 86400,
+      "2026-04-18": 81900,
+      "2026-04-19": 86400,
+      "2026-04-20": 86400,
+      "2026-04-21": 86400,
+      "2026-04-22": 86330,
+      "2026-04-23": 86400,
+      "2026-04-24": 86400,
+      "2026-04-25": 86400,
+      "2026-04-26": 86400,
+      "2026-04-27": 86400,
+      "2026-04-28": 86400,
+      "2026-04-29": 86400,
+      "2026-04-30": 86400,
+      "2026-05-01": 86400,
+      "2026-05-02": 86400,
+      "2026-05-03": 86398,
+      "2026-05-04": 86400,
+      "2026-05-05": 86400,
+      "2026-05-06": 86400,
+      "2026-05-07": 86400,
+      "2026-05-08": 86400,
+      "2026-05-09": 86400,
+      "2026-05-10": 86400,
+      "2026-05-11": 86400,
+      "2026-05-12": 86400,
+      "2026-05-13": 86400,
+      "2026-05-14": 86400,
+      "2026-05-15": 86400,
+      "2026-05-16": 86400,
+      "2026-05-17": 86400,
+      "2026-05-18": 38100
+    }
+  },
+  "output": "research-data/processed/kachoio_polytop_multiday.parquet",
+  "source": "kachoio-v1",
+  "totals": {
+    "btc_candidate_markets": 15682,
+    "btc_kept_markets": 15679,
+    "candidate_markets": 27940,
+    "eth_candidate_markets": 12258,
+    "eth_kept_markets": 12255,
+    "expected_rows_kept": 8378999,
+    "kept_markets": 27934,
+    "markets_dropped_incomplete_1s_window": 6,
+    "output_bytes": 146252784,
+    "rows_dropped_incomplete_market": 1639,
+    "rows_dropped_null_quotes": 1201,
+    "rows_kept": 8378999
+  },
+  "unsupported_15m": {
+    "BTC": {
+      "included": false,
+      "matched_local_market_metadata": 0,
+      "matched_local_tick_condition_ids": 0,
+      "reason": "not included: no explicitly labeled selected 15m condition_id exists in the local Kachoio 5m market metadata or ticks; local markets have 300-second windows, so a 15m tape cannot be built without new inference",
+      "selected_15m_markets": 60
+    },
+    "ETH": {
+      "included": false,
+      "matched_local_market_metadata": 0,
+      "matched_local_tick_condition_ids": 0,
+      "reason": "not included: no explicitly labeled selected 15m condition_id exists in the local Kachoio 5m market metadata or ticks; local markets have 300-second windows, so a 15m tape cannot be built without new inference",
+      "selected_15m_markets": 60
+    }
+  }
+}

@@ -61,6 +61,7 @@ pub enum Horizon {
     M15,
     H1,
     H4,
+    Daily,
 }
 
 impl Horizon {
@@ -68,8 +69,9 @@ impl Horizon {
     pub const FIFTEEN_MINUTES: Self = Self::M15;
     pub const ONE_HOUR: Self = Self::H1;
     pub const FOUR_HOURS: Self = Self::H4;
+    pub const DAILY: Self = Self::Daily;
 
-    pub const ALL: [Self; 4] = [Self::M5, Self::M15, Self::H1, Self::H4];
+    pub const ALL: [Self; 5] = [Self::M5, Self::M15, Self::H1, Self::H4, Self::Daily];
 
     #[must_use]
     pub const fn seconds(self) -> u64 {
@@ -78,6 +80,7 @@ impl Horizon {
             Self::M15 => 15 * 60,
             Self::H1 => 60 * 60,
             Self::H4 => 4 * 60 * 60,
+            Self::Daily => 24 * 60 * 60,
         }
     }
 
@@ -88,6 +91,7 @@ impl Horizon {
             Self::M15 => "15m",
             Self::H1 => "1h",
             Self::H4 => "4h",
+            Self::Daily => "daily",
         }
     }
 
@@ -114,7 +118,10 @@ impl Horizon {
 
 impl fmt::Display for Horizon {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+        match self {
+            Self::Daily => formatter.write_str("1d"),
+            _ => formatter.write_str(self.as_str()),
+        }
     }
 }
 
@@ -127,7 +134,8 @@ impl FromStr for Horizon {
             "15m" | "15min" | "15mins" | "15minute" | "15minutes" => Ok(Self::M15),
             "1h" | "1hr" | "1hour" | "1hours" => Ok(Self::H1),
             "4h" | "4hr" | "4hour" | "4hours" => Ok(Self::H4),
-            _ => Err("horizon must be 5m, 15m, 1h, or 4h"),
+            "daily" | "1d" | "day" => Ok(Self::Daily),
+            _ => Err("horizon must be 5m, 15m, 1h, 4h, or daily"),
         }
     }
 }
@@ -267,6 +275,25 @@ impl ResolutionMechanism {
             Self::Above => reference.value >= target,
             Self::Below => reference.value <= target,
         }
+    }
+}
+
+#[cfg(test)]
+mod horizon_tests {
+    use super::Horizon;
+
+    #[test]
+    fn daily_horizon_has_market_slug_and_display_representations() {
+        for alias in ["daily", "1d", "day"] {
+            assert_eq!(alias.parse::<Horizon>(), Ok(Horizon::Daily));
+        }
+        assert_eq!(Horizon::Daily.as_str(), "daily");
+        assert_eq!(Horizon::Daily.to_string(), "1d");
+        assert_eq!(Horizon::Daily.seconds(), 86_400);
+        assert_eq!(
+            Horizon::from_slug("btc-updown-daily-1790116200"),
+            Some(Horizon::Daily)
+        );
     }
 }
 

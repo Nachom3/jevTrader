@@ -6,7 +6,7 @@
 //! trusted. A fresh REST snapshot is the caller's responsibility after seeing
 //! `stale == true`.
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::domain::{ConditionId, MarketId, PriceTicks, TickSize, TokenId, TradeSide};
 use crate::polymarket::{BookSide, Level, OrderBook};
@@ -133,6 +133,7 @@ pub struct MarketActor {
     receiver: mpsc::Receiver<MarketMessage>,
     book: OrderBook,
     next_sequence: Option<u64>,
+    snapshot_sender: Option<watch::Sender<MarketSnapshot>>,
 }
 
 impl MarketActor {
@@ -150,7 +151,27 @@ impl MarketActor {
             receiver,
             book,
             next_sequence: None,
+            snapshot_sender: None,
         }
+    }
+
+    /// Creates an actor, its bounded input channel, and a read-only snapshot observer.
+    ///
+    /// The observer receives an updated snapshot after every applied message,
+    /// allowing a caller to poll the book while [`Self::run`] owns the actor.
+    #[must_use]
+    pub fn channel_with_snapshot(
+        yes_token_id: TokenId,
+        capacity: usize,
+    ) -> (
+        Self,
+        mpsc::Sender<MarketMessage>,
+        watch::Receiver<MarketSnapshot>,
+    ) {
+        let (mut actor, sender) = Self::channel(yes_token_id, capacity);
+        let (snapshot_sender, snapshot_receiver) = watch::channel(actor.latest_snapshot());
+        actor.snapshot_sender = Some(snapshot_sender);
+        (actor, sender, snapshot_receiver)
     }
 
     /// Creates an actor and its bounded input channel.
@@ -173,6 +194,9 @@ impl MarketActor {
             | MarketMessage::BestBidAsk(_)
             | MarketMessage::NewMarket(_)
             | MarketMessage::MarketResolved(_) => {}
+        }
+        if let Some(sender) = &self.snapshot_sender {
+            sender.send_replace(self.latest_snapshot());
         }
     }
 
@@ -296,6 +320,22 @@ mod tests {
     fn actor() -> MarketActor {
         let (_sender, receiver) = mpsc::channel(8);
         MarketActor::new(yes_token(), receiver)
+    }
+
+    #[test]
+    fn snapshot_channel_observer_tracks_actor_updates() {
+        let (mut actor, _sender, mut observer) = MarketActor::channel_with_snapshot(yes_token(), 8);
+        assert!(observer.borrow().stale);
+
+        actor.apply_message(MarketMessage::BookSnapshot(snapshot(
+            10,
+            vec![(price(0.40), 10)],
+            vec![(price(0.60), 20)],
+        )));
+
+        let latest = observer.borrow_and_update().clone();
+        assert!(!latest.stale);
+        assert_eq!(latest.book.bids(), &[(price(0.40), 10)]);
     }
 
     #[test]

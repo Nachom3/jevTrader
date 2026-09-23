@@ -25,3 +25,5 @@ pub use market_actor::{
 };
 
 pub use signal_actor::{SignalActor, StalenessPolicy, is_usable};
+
+pub mod ws_bridge;

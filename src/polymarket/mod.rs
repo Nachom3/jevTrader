@@ -2,12 +2,14 @@
 
 #[allow(dead_code)]
 pub mod book;
+pub mod discover;
 #[allow(dead_code)]
 pub mod rest;
 #[allow(dead_code)]
 pub mod ws;
 
 pub use book::{BASE_UNITS_PER_TOKEN, BookSide, INLINE_LEVEL_CAPACITY, Level, OrderBook};
+pub use discover::discover_live_specs;
 pub use rest::{
     MarketMetadata, RestError, TopOfBookSnapshot, fetch_market_by_slug, fetch_top_of_book,
 };

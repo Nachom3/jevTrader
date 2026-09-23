@@ -155,7 +155,7 @@ impl AppConfig {
     /// `QUOTE_*` variables override the defaults from [`QuoteThresholds`].
     /// `FRESHNESS_MAX_LAG` and `FRESHNESS_MAX_LATENCY_MS` override the shared
     /// freshness defaults. `QUANT_*` controls the optional quant enrichment.
-    /// The four credentials/endpoints are always required.
+    /// Credentials are required; QuestDB endpoints default to localhost.
     pub fn load() -> Result<Self, ConfigError> {
         let _ = dotenvy::dotenv();
 
@@ -192,15 +192,48 @@ impl AppConfig {
         };
         quant.validate()?;
 
+        let questdb_http_url =
+            optional_environment_variable("QUESTDB_HTTP_URL", "http://localhost:9002")?;
+        let questdb_ilp_addr = optional_environment_variable("QUESTDB_ILP_ADDR", "localhost:9009")?;
+
         Ok(Self {
             typesafe_api_key: required_environment_variable("TYPESAFE_API_KEY")?,
             polymarket_private_key: required_environment_variable("POLYMARKET_PRIVATE_KEY")?,
-            questdb_http_url: required_environment_variable("QUESTDB_HTTP_URL")?,
-            questdb_ilp_addr: required_environment_variable("QUESTDB_ILP_ADDR")?,
+            questdb_http_url,
+            questdb_ilp_addr,
             quote_thresholds,
             freshness_policy,
             quant,
         })
+    }
+}
+
+fn optional_environment_variable(
+    name: &'static str,
+    default: &'static str,
+) -> Result<String, ConfigError> {
+    let configured = match env::var(name) {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ConfigError::InvalidEnvironmentVariable(name));
+        }
+    };
+    let (value, used_default) = environment_value_or_default(configured, default);
+    if used_default {
+        tracing::info!(
+            environment_variable = name,
+            default = default,
+            "using default; set the environment variable to override"
+        );
+    }
+    Ok(value)
+}
+
+fn environment_value_or_default(configured: Option<String>, default: &str) -> (String, bool) {
+    match configured {
+        Some(value) if !value.is_empty() => (value, false),
+        _ => (default.to_owned(), true),
     }
 }
 
@@ -216,6 +249,22 @@ fn required_environment_variable(name: &'static str) -> Result<String, ConfigErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questdb_endpoint_defaults_apply_to_missing_and_empty_values() {
+        assert_eq!(
+            environment_value_or_default(None, "http://localhost:9002"),
+            ("http://localhost:9002".to_owned(), true)
+        );
+        assert_eq!(
+            environment_value_or_default(Some(String::new()), "localhost:9009"),
+            ("localhost:9009".to_owned(), true)
+        );
+        assert_eq!(
+            environment_value_or_default(Some("http://questdb:9002".to_owned()), "fallback"),
+            ("http://questdb:9002".to_owned(), false)
+        );
+    }
 
     #[test]
     fn default_thresholds_validate() {
