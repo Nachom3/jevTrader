@@ -14,6 +14,7 @@ use jevtrader::jev::client::{self, PRECOMPUTE_MAX_ATTEMPTS};
 use jevtrader::jev::request::{QuestionSet, V1State};
 use jevtrader::jev::response::{JevEvaluation, parse_evaluation_json};
 use jevtrader::polymarket::OrderBook;
+use jevtrader::replay::causality::{CausalityVerdict, audit_state};
 use jevtrader::replay::jev_cache::{
     CacheEntryMetadata, CachedJev, JevCache, JevCacheKey, VersionPins, versions::sha256_hex,
 };
@@ -119,6 +120,7 @@ struct Counts {
     incomplete_missing_kachoio_outcome: usize,
     incomplete_missing_underlying: usize,
     skipped_invalid_candidate: usize,
+    skipped_causality_audit: usize,
     live_calls: usize,
     status: BTreeMap<String, usize>,
     split: BTreeMap<String, usize>,
@@ -753,10 +755,11 @@ fn build_tape_prepared(params: TapeBuildParams<'_>) -> Result<Vec<Prepared>, Box
             continue;
         }
         // R1: target is the first underlying tick at/after market start (earliest loaded fallback); Kachoio's inferred final-tick outcome is presence-only.
-        let target = base_ticks
+        let target_tick = base_ticks
             .iter()
             .find(|tick| tick.ts_ms >= first_ts.max(0) as u64)
-            .map_or_else(|| base_ticks[0].price, |tick| tick.price);
+            .unwrap_or(&base_ticks[0]);
+        let target = target_tick.price;
         let resolution_ms = last_ts.saturating_add(1_000);
 
         for index in selected {
@@ -797,7 +800,7 @@ fn build_tape_prepared(params: TapeBuildParams<'_>) -> Result<Vec<Prepared>, Box
                 counts.incomplete_missing_underlying += 1;
                 continue;
             };
-            let perp = underlying
+            let perp_tick = underlying
                 .iter()
                 .filter_map(|event| match event {
                     HistoricalEvent::UnderlyingTick {
@@ -810,12 +813,12 @@ fn build_tape_prepared(params: TapeBuildParams<'_>) -> Result<Vec<Prepared>, Box
                         && price.is_finite()
                         && *price > 0.0 =>
                     {
-                        Some(*price)
+                        Some((*ts_ms, *price))
                     }
                     _ => None,
                 })
-                .next_back()
-                .unwrap_or(spot);
+                .next_back();
+            let perp = perp_tick.map_or(spot, |(_, price)| price);
             let resolution = ResolutionContext::new(
                 target,
                 resolution_ms.saturating_sub(row.ts_ms) as u64 / 1_000,
@@ -873,6 +876,35 @@ fn build_tape_prepared(params: TapeBuildParams<'_>) -> Result<Vec<Prepared>, Box
                 None,
                 candidate,
             );
+            let state_json = serde_json::to_value(&state)?;
+            let mut audit_inputs = Vec::with_capacity(recent_ticks.len() + 6);
+            audit_inputs.push(("polymarket_book", row.ts_ms));
+            audit_inputs.extend(
+                [1_000_i64, 5_000, 30_000]
+                    .into_iter()
+                    .map(|lag| ("polymarket_price_lag", row.ts_ms - lag)),
+            );
+            audit_inputs.push(("underlying_target", target_tick.ts_ms as i64));
+            audit_inputs.extend(
+                recent_ticks
+                    .iter()
+                    .map(|tick| ("underlying_tick", tick.ts_ms as i64)),
+            );
+            if let Some((ts_ms, _)) = perp_tick {
+                audit_inputs.push(("perp_tick", ts_ms));
+            }
+            if let CausalityVerdict::Rejected { reason } =
+                audit_state(row.ts_ms, &audit_inputs, &state_json)
+            {
+                counts.skipped_causality_audit += 1;
+                tracing::warn!(
+                    condition_id = %meta.condition_id,
+                    timestamp_ms = row.ts_ms,
+                    ?reason,
+                    "skipping tape state rejected by causality audit"
+                );
+                continue;
+            }
             let questions = QuestionSet::V1.build(candidate);
             let state_hash = sha256_hex(&canonical_bytes(&state)?);
             let questions_hash = sha256_hex(&canonical_bytes(&questions)?);
