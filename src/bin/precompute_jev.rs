@@ -49,6 +49,9 @@ const FLUSH_EVERY_COMPLETED_STATES: usize = 10;
 const FALLBACK_TICK_SIZE: f64 = 0.01;
 // Smoke cap only. This is not the preregistered 2,000-5,000 pair target.
 const DEFAULT_MAX_STATES: &str = "50";
+const DEFAULT_GAMMA_METADATA: &str =
+    "research-data/cache/walkforward-01/verify-eligibility/gamma_meta.parquet";
+const GAMMA_MARKETS_SOURCE: &str = "https://gamma-api.polymarket.com/markets";
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -56,6 +59,7 @@ type BoxError = Box<dyn Error + Send + Sync>;
 struct Args {
     underlying: String,
     tape: Option<String>,
+    gamma_metadata: Option<PathBuf>,
     out: PathBuf,
     run_id: String,
     per_condition: usize,
@@ -118,6 +122,18 @@ struct Counts {
     incomplete_short_history: usize,
     incomplete_null_quote: usize,
     incomplete_missing_kachoio_outcome: usize,
+    skipped_kachoio_missing_raw_market: usize,
+    skipped_kachoio_invalid_asset: usize,
+    skipped_kachoio_asset_mismatch: usize,
+    skipped_kachoio_invalid_5m_slug: usize,
+    skipped_kachoio_missing_market_start: usize,
+    skipped_kachoio_invalid_market_start: usize,
+    skipped_kachoio_invalid_duration: usize,
+    skipped_kachoio_slug_start_mismatch: usize,
+    skipped_kachoio_missing_exact_question_rules: usize,
+    skipped_kachoio_metadata_mismatch: usize,
+    gamma_metadata_rows_used: usize,
+    gamma_synthesized_markets: usize,
     incomplete_missing_underlying: usize,
     skipped_invalid_candidate: usize,
     skipped_causality_audit: usize,
@@ -188,12 +204,29 @@ async fn run() -> Result<(), BoxError> {
     }
     fs::create_dir_all(&args.out)?;
     let pins = VersionPins::current_v1();
-    let corpus = Path::new(&args.underlying)
+    let corpus_path = Path::new(&args.underlying)
         .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .display()
-        .to_string();
-    let metas = read_market_metas(&corpus);
+        .unwrap_or_else(|| Path::new("."));
+    let corpus_root = corpus_path.parent().unwrap_or_else(|| Path::new("."));
+    let corpus = corpus_path.display().to_string();
+    let mut metas = read_market_metas(&corpus);
+    let gamma_metadata_path = args.gamma_metadata.clone().or_else(|| {
+        let path = PathBuf::from(DEFAULT_GAMMA_METADATA);
+        path.is_file().then_some(path)
+    });
+    let gamma_text: HashMap<String, GammaExactText> =
+        if let Some(path) = gamma_metadata_path.as_deref() {
+            let gamma_text = read_gamma_exact_text(path)?;
+            tracing::info!(
+                path = %path.display(),
+                gamma_rows = gamma_text.len(),
+                "loaded exact Gamma market text"
+            );
+            gamma_text
+        } else {
+            HashMap::new()
+        };
+    let gamma_metadata_rows_used = apply_gamma_exact_text(&mut metas, &gamma_text);
     let specs = read_resolution_specs_end(&corpus);
     let regimes = read_regimes(&corpus);
     let market_tick_sizes = read_market_tick_sizes(&corpus);
@@ -202,7 +235,10 @@ async fn run() -> Result<(), BoxError> {
         .as_ref()
         .map(|boundary| boundary.timestamp_ms);
 
-    let mut counts = Counts::default();
+    let mut counts = Counts {
+        gamma_metadata_rows_used,
+        ..Counts::default()
+    };
     for status in ["ok", "hit", "429", "5xx", "deadline", "other"] {
         counts.status.insert(status.to_owned(), 0);
     }
@@ -211,12 +247,20 @@ async fn run() -> Result<(), BoxError> {
     let mut tape_inputs = Vec::new();
     if let Some(tape_path) = args.tape.as_deref() {
         let tape_path_buf = PathBuf::from(tape_path);
-        let market_files = kachoio_market_files(&tape_path_buf);
+        let market_files = kachoio_market_files(&tape_path_buf, corpus_root);
         let outcomes = read_kachoio_outcomes(&market_files)?;
         let tape = read_kachoio_tape(tape_path)?;
+        let local_markets = read_kachoio_market_metadata(&market_files)?;
+        let tape_metas = join_kachoio_metadata(
+            &metas,
+            &local_markets,
+            tape.keys(),
+            &gamma_text,
+            &mut counts,
+        );
         prepared = build_tape_prepared(TapeBuildParams {
             args: &args,
-            metas: &metas,
+            metas: &tape_metas,
             specs: &specs,
             regimes: &regimes,
             tape: &tape,
@@ -323,6 +367,9 @@ async fn run() -> Result<(), BoxError> {
         format!("{corpus}/resolution_specs.parquet"),
         format!("{corpus}/market_regimes.parquet"),
     ];
+    if let Some(path) = gamma_metadata_path {
+        input_files.push(path.display().to_string());
+    }
     if args.tape.is_none() {
         input_files.push(format!("{corpus}/resolutions.parquet"));
     }
@@ -477,16 +524,417 @@ struct TapeRow {
     mid: Option<f64>,
 }
 
-fn kachoio_market_files(tape_path: &Path) -> Vec<PathBuf> {
-    let raw_dir = tape_path
+#[derive(Debug, Clone)]
+struct KachoioMarketMeta {
+    condition_id: String,
+    asset: String,
+    slug: String,
+    market_start_ms: Option<i64>,
+    market_end_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KachoioMetadataRejection {
+    MissingRawMarket,
+    InvalidAsset,
+    AssetMismatch,
+    Invalid5mSlug,
+    MissingMarketStart,
+    InvalidMarketStart,
+    InvalidDuration,
+    SlugStartMismatch,
+    MissingExactQuestionRules,
+    MetadataMismatch,
+}
+
+fn kachoio_market_files(tape_path: &Path, corpus_root: &Path) -> Vec<PathBuf> {
+    let corpus_raw_dir = corpus_root.join("raw/kaggle-kachoio");
+    let legacy_raw_dir = tape_path
         .parent()
         .and_then(Path::parent)
-        .map(|root| root.join("raw/kaggle-kachoio"))
-        .unwrap_or_else(|| PathBuf::from("research-data/raw/kaggle-kachoio"));
+        .map(|root| root.join("raw/kaggle-kachoio"));
+    let contains_market_file = |raw_dir: &Path| {
+        ["btc_markets.parquet", "eth_markets.parquet"]
+            .into_iter()
+            .any(|name| raw_dir.join(name).is_file())
+    };
+    let raw_dir = if contains_market_file(&corpus_raw_dir) {
+        corpus_raw_dir
+    } else if let Some(legacy_raw_dir) = legacy_raw_dir.filter(|path| contains_market_file(path)) {
+        legacy_raw_dir
+    } else {
+        corpus_raw_dir
+    };
     ["btc_markets.parquet", "eth_markets.parquet"]
         .into_iter()
         .map(|name| raw_dir.join(name))
         .collect()
+}
+
+fn read_kachoio_market_metadata(
+    paths: &[PathBuf],
+) -> Result<HashMap<String, KachoioMarketMeta>, BoxError> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let mut markets = HashMap::new();
+    let mut opened = 0usize;
+    for path in paths {
+        let Ok(file) = File::open(path) else {
+            continue;
+        };
+        let Some(asset) =
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| match name {
+                    "btc_markets.parquet" => Some("BTC"),
+                    "eth_markets.parquet" => Some("ETH"),
+                    _ => None,
+                })
+        else {
+            continue;
+        };
+        opened += 1;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_batch_size(8192)
+            .build()?;
+        for batch in reader {
+            let batch = batch?;
+            for row in 0..batch.num_rows() {
+                let Some(condition_id) =
+                    parquet_string(&batch, "condition_id", row).filter(|value| !value.is_empty())
+                else {
+                    continue;
+                };
+                markets.insert(
+                    condition_id.clone(),
+                    KachoioMarketMeta {
+                        condition_id,
+                        asset: asset.to_owned(),
+                        slug: parquet_string(&batch, "slug", row).unwrap_or_default(),
+                        market_start_ms: parquet_timestamp_ms(&batch, "market_start", row),
+                        market_end_ms: parquet_timestamp_ms(&batch, "market_end", row),
+                    },
+                );
+            }
+        }
+    }
+    if opened == 0 {
+        return Err("kachoio markets files are missing; expected btc_markets.parquet and eth_markets.parquet".into());
+    }
+    Ok(markets)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GammaExactText {
+    market_id: String,
+    question: String,
+    resolution_rules: String,
+}
+
+#[derive(Clone)]
+struct GammaExactTextRow<'a> {
+    condition_id: &'a str,
+    gamma_condition_id: &'a str,
+    gamma_market_id: &'a str,
+    question: &'a str,
+    resolution_rules: &'a str,
+    rules_source_field: &'a str,
+    source_url: &'a str,
+    payload_json: &'a str,
+}
+
+fn gamma_payload_text(market: &Value, fields: &[&str]) -> Option<(String, String)> {
+    fields.iter().find_map(|field| {
+        market
+            .get(*field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (value.to_owned(), (*field).to_owned()))
+    })
+}
+
+fn gamma_scalar_text(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.is_number().then(|| value.to_string()))
+}
+
+fn validated_gamma_exact_text(row: GammaExactTextRow<'_>) -> Option<GammaExactText> {
+    if row.source_url != GAMMA_MARKETS_SOURCE {
+        return None;
+    }
+    let market: Value = serde_json::from_str(row.payload_json).ok()?;
+    let payload_condition_id = gamma_payload_text(&market, &["conditionId", "condition_id"])?;
+    let normalized_condition_id = row.condition_id.trim().to_ascii_lowercase();
+    if normalized_condition_id.is_empty()
+        || row.gamma_condition_id.trim().to_ascii_lowercase() != normalized_condition_id
+        || payload_condition_id.0.trim().to_ascii_lowercase() != normalized_condition_id
+    {
+        return None;
+    }
+    let payload_market_id = gamma_scalar_text(market.get("id")?)?;
+    if payload_market_id.trim().is_empty() || payload_market_id != row.gamma_market_id {
+        return None;
+    }
+    let payload_question = gamma_payload_text(&market, &["question"])?;
+    let payload_rules = gamma_payload_text(
+        &market,
+        &[
+            "resolutionRules",
+            "resolution_rules",
+            "resolutionCriteria",
+            "resolution_criteria",
+            "rules",
+        ],
+    )
+    .or_else(|| gamma_payload_text(&market, &["description"]))?;
+    if payload_question.0.trim().is_empty()
+        || payload_rules.0.trim().is_empty()
+        || payload_question.0 != row.question
+        || payload_rules.0 != row.resolution_rules
+        || payload_rules.1 != row.rules_source_field
+    {
+        return None;
+    }
+    Some(GammaExactText {
+        market_id: payload_market_id,
+        question: payload_question.0,
+        resolution_rules: payload_rules.0,
+    })
+}
+
+fn read_gamma_exact_text(path: &Path) -> Result<HashMap<String, GammaExactText>, BoxError> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let file = File::open(path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+        .with_batch_size(8192)
+        .build()?;
+    let mut metadata = HashMap::new();
+    for batch in reader {
+        let batch = batch?;
+        for row in 0..batch.num_rows() {
+            let Some(condition_id) =
+                parquet_string(&batch, "condition_id", row).filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let gamma_condition_id =
+                parquet_string(&batch, "gamma_condition_id", row).unwrap_or_default();
+            let gamma_market_id =
+                parquet_string(&batch, "gamma_market_id", row).unwrap_or_default();
+            let question = parquet_string(&batch, "question", row).unwrap_or_default();
+            let resolution_rules =
+                parquet_string(&batch, "resolution_rules", row).unwrap_or_default();
+            let rules_source_field =
+                parquet_string(&batch, "resolution_rules_source_field", row).unwrap_or_default();
+            let source_url = parquet_string(&batch, "gamma_source_url", row).unwrap_or_default();
+            let payload_json =
+                parquet_string(&batch, "gamma_payload_json", row).unwrap_or_default();
+            let Some(exact) = validated_gamma_exact_text(GammaExactTextRow {
+                condition_id: &condition_id,
+                gamma_condition_id: &gamma_condition_id,
+                gamma_market_id: &gamma_market_id,
+                question: &question,
+                resolution_rules: &resolution_rules,
+                rules_source_field: &rules_source_field,
+                source_url: &source_url,
+                payload_json: &payload_json,
+            }) else {
+                continue;
+            };
+            metadata.insert(condition_id.trim().to_ascii_lowercase(), exact);
+        }
+    }
+    Ok(metadata)
+}
+
+fn apply_gamma_exact_text(
+    metas: &mut [MarketMeta],
+    gamma_text: &HashMap<String, GammaExactText>,
+) -> usize {
+    let mut rows_used = 0;
+    for meta in metas {
+        let condition_id = meta.condition_id.trim().to_ascii_lowercase();
+        let Some(exact) = gamma_text.get(&condition_id) else {
+            continue;
+        };
+        meta.question.clone_from(&exact.question);
+        meta.resolution_rules.clone_from(&exact.resolution_rules);
+        rows_used += 1;
+    }
+    rows_used
+}
+
+fn join_kachoio_metadata<'a>(
+    metas: &[MarketMeta],
+    local_markets: &HashMap<String, KachoioMarketMeta>,
+    tape_conditions: impl Iterator<Item = &'a String>,
+    gamma_text: &HashMap<String, GammaExactText>,
+    counts: &mut Counts,
+) -> Vec<MarketMeta> {
+    let mut metadata_by_condition: HashMap<&str, &MarketMeta> = metas
+        .iter()
+        .map(|meta| (meta.condition_id.as_str(), meta))
+        .collect();
+    let mut tape_conditions: Vec<&String> = tape_conditions.collect();
+    tape_conditions.sort_unstable();
+
+    // Gamma-synthesized entries for tape IDs outside the selected universe.
+    // Exact venue text only; local geometry passes the same checks as
+    // validate_kachoio_market_metadata. Split defaults to Exploration (the
+    // precompute convention); walk-forward assigns InSample/OOS by timestamp.
+    let mut synthesized: Vec<MarketMeta> = Vec::new();
+    for condition_id in tape_conditions.iter() {
+        if metadata_by_condition.contains_key(condition_id.as_str()) {
+            continue;
+        }
+        let normalized = condition_id.trim().to_ascii_lowercase();
+        let (Some(local), Some(exact)) = (
+            local_markets.get(*condition_id),
+            gamma_text.get(&normalized),
+        ) else {
+            continue;
+        };
+        if !matches!(local.asset.as_str(), "BTC" | "ETH") {
+            continue;
+        }
+        let mut slug_parts = local.slug.split('-');
+        let expected_slug_asset = local.asset.to_ascii_lowercase();
+        if slug_parts.next() != Some(expected_slug_asset.as_str())
+            || slug_parts.next() != Some("updown")
+            || slug_parts.next() != Some("5m")
+        {
+            continue;
+        }
+        let slug_epoch = slug_parts
+            .next()
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|_| slug_parts.next().is_none());
+        let market_start_ms = local.market_start_ms.unwrap_or(0);
+        if market_start_ms <= 0
+            || local
+                .market_end_ms
+                .and_then(|end_ms| end_ms.checked_sub(market_start_ms))
+                != Some(300_000)
+            || market_start_ms % 1_000 != 0
+            || slug_epoch != Some(market_start_ms / 1_000)
+        {
+            continue;
+        }
+        synthesized.push(MarketMeta {
+            market_id: exact.market_id.clone(),
+            condition_id: local.condition_id.clone(),
+            asset: local.asset.clone(),
+            horizon: "5m".to_owned(),
+            split: jevtrader::replay::types::Split::Exploration,
+            fidelity: Fidelity::Exact,
+            slug: local.slug.clone(),
+            question: exact.question.clone(),
+            resolution_rules: exact.resolution_rules.clone(),
+        });
+    }
+    counts.gamma_synthesized_markets = synthesized.len();
+    metadata_by_condition.extend(
+        synthesized
+            .iter()
+            .map(|meta| (meta.condition_id.as_str(), meta)),
+    );
+
+    let mut joined = Vec::new();
+    for condition_id in tape_conditions {
+        let local = local_markets.get(condition_id);
+        let metadata = metadata_by_condition.get(condition_id.as_str()).copied();
+        match validate_kachoio_market_metadata(local, metadata) {
+            Ok(meta) => joined.push(meta.clone()),
+            Err(rejection) => record_kachoio_metadata_rejection(counts, rejection),
+        }
+    }
+    joined
+}
+
+fn validate_kachoio_market_metadata<'a>(
+    local: Option<&KachoioMarketMeta>,
+    metadata: Option<&'a MarketMeta>,
+) -> Result<&'a MarketMeta, KachoioMetadataRejection> {
+    let local = local.ok_or(KachoioMetadataRejection::MissingRawMarket)?;
+    if !matches!(local.asset.as_str(), "BTC" | "ETH") {
+        return Err(KachoioMetadataRejection::InvalidAsset);
+    }
+
+    let mut slug_parts = local.slug.split('-');
+    let expected_slug_asset = local.asset.to_ascii_lowercase();
+    if slug_parts.next() != Some(expected_slug_asset.as_str()) {
+        return Err(KachoioMetadataRejection::AssetMismatch);
+    }
+    if slug_parts.next() != Some("updown") || slug_parts.next() != Some("5m") {
+        return Err(KachoioMetadataRejection::Invalid5mSlug);
+    }
+    let slug_start_seconds = slug_parts
+        .next()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|_| slug_parts.next().is_none())
+        .ok_or(KachoioMetadataRejection::Invalid5mSlug)?;
+
+    let market_start_ms = local
+        .market_start_ms
+        .ok_or(KachoioMetadataRejection::MissingMarketStart)?;
+    if market_start_ms <= 0 {
+        return Err(KachoioMetadataRejection::InvalidMarketStart);
+    }
+    if local
+        .market_end_ms
+        .and_then(|end_ms| end_ms.checked_sub(market_start_ms))
+        != Some(300_000)
+    {
+        return Err(KachoioMetadataRejection::InvalidDuration);
+    }
+    if market_start_ms % 1_000 != 0 || market_start_ms / 1_000 != slug_start_seconds {
+        return Err(KachoioMetadataRejection::SlugStartMismatch);
+    }
+
+    let metadata = metadata.ok_or(KachoioMetadataRejection::MissingExactQuestionRules)?;
+    if metadata.question.trim().is_empty() || metadata.resolution_rules.trim().is_empty() {
+        return Err(KachoioMetadataRejection::MissingExactQuestionRules);
+    }
+    if metadata.condition_id != local.condition_id
+        || metadata.asset != local.asset
+        || metadata.horizon != "5m"
+        || metadata.slug != local.slug
+    {
+        return Err(KachoioMetadataRejection::MetadataMismatch);
+    }
+    Ok(metadata)
+}
+
+fn record_kachoio_metadata_rejection(counts: &mut Counts, rejection: KachoioMetadataRejection) {
+    match rejection {
+        KachoioMetadataRejection::MissingRawMarket => {
+            counts.skipped_kachoio_missing_raw_market += 1;
+        }
+        KachoioMetadataRejection::InvalidAsset => counts.skipped_kachoio_invalid_asset += 1,
+        KachoioMetadataRejection::AssetMismatch => counts.skipped_kachoio_asset_mismatch += 1,
+        KachoioMetadataRejection::Invalid5mSlug => counts.skipped_kachoio_invalid_5m_slug += 1,
+        KachoioMetadataRejection::MissingMarketStart => {
+            counts.skipped_kachoio_missing_market_start += 1;
+        }
+        KachoioMetadataRejection::InvalidMarketStart => {
+            counts.skipped_kachoio_invalid_market_start += 1;
+        }
+        KachoioMetadataRejection::InvalidDuration => {
+            counts.skipped_kachoio_invalid_duration += 1;
+        }
+        KachoioMetadataRejection::SlugStartMismatch => {
+            counts.skipped_kachoio_slug_start_mismatch += 1;
+        }
+        KachoioMetadataRejection::MissingExactQuestionRules => {
+            counts.skipped_kachoio_missing_exact_question_rules += 1;
+        }
+        KachoioMetadataRejection::MetadataMismatch => {
+            counts.skipped_kachoio_metadata_mismatch += 1;
+        }
+    }
 }
 
 fn read_kachoio_tape(path: &str) -> Result<HashMap<String, Vec<TapeRow>>, BoxError> {
@@ -623,6 +1071,23 @@ fn parquet_i64(batch: &RecordBatch, name: &str, row: usize) -> Option<i64> {
     let index = batch.schema().index_of(name).ok()?;
     let values = batch.column(index).as_any().downcast_ref::<Int64Array>()?;
     (!values.is_null(row)).then(|| values.value(row))
+}
+
+fn parquet_timestamp_ms(batch: &RecordBatch, name: &str, row: usize) -> Option<i64> {
+    use arrow::array::{
+        Array as _, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    };
+
+    let index = batch.schema().index_of(name).ok()?;
+    let column = batch.column(index);
+    if let Some(values) = column.as_any().downcast_ref::<TimestampMillisecondArray>() {
+        return (!values.is_null(row)).then(|| values.value(row));
+    }
+    if let Some(values) = column.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+        return (!values.is_null(row)).then(|| values.value(row).checked_div(1_000))?;
+    }
+    let values = column.as_any().downcast_ref::<TimestampNanosecondArray>()?;
+    (!values.is_null(row)).then(|| values.value(row).checked_div(1_000_000))?
 }
 
 struct TapeBuildParams<'a> {
@@ -1478,6 +1943,7 @@ fn parse_args() -> Result<Args, BoxError> {
     Ok(Args {
         underlying: value("--underlying", DEFAULT_UNDERLYING),
         tape: arg_value(&args, "--tape"),
+        gamma_metadata: arg_value(&args, "--gamma-metadata").map(PathBuf::from),
         out: PathBuf::from(value("--out", DEFAULT_OUT)),
         run_id: value("--run-id", DEFAULT_RUN_ID),
         per_condition,
@@ -1513,6 +1979,163 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_market() -> KachoioMarketMeta {
+        KachoioMarketMeta {
+            condition_id: "condition-1".to_owned(),
+            asset: "BTC".to_owned(),
+            slug: "btc-updown-5m-1700000000".to_owned(),
+            market_start_ms: Some(1_700_000_000_000),
+            market_end_ms: Some(1_700_000_300_000),
+        }
+    }
+
+    fn exact_market_meta() -> MarketMeta {
+        MarketMeta {
+            market_id: "market-1".to_owned(),
+            condition_id: "condition-1".to_owned(),
+            asset: "BTC".to_owned(),
+            horizon: "5m".to_owned(),
+            split: jevtrader::replay::types::Split::Exploration,
+            fidelity: Fidelity::Exact,
+            slug: "btc-updown-5m-1700000000".to_owned(),
+            question: "Will BTC be higher in five minutes?".to_owned(),
+            resolution_rules: "Resolve using the listed local source.".to_owned(),
+        }
+    }
+
+    fn gamma_exact_text_row<'a>(
+        payload_json: &'a str,
+        rules_source_field: &'a str,
+    ) -> GammaExactTextRow<'a> {
+        GammaExactTextRow {
+            condition_id: "condition-1",
+            gamma_condition_id: "condition-1",
+            gamma_market_id: "42",
+            question: "Will BTC be higher in five minutes?",
+            resolution_rules: "Resolve using the listed local source.",
+            rules_source_field,
+            source_url: GAMMA_MARKETS_SOURCE,
+            payload_json,
+        }
+    }
+
+    #[test]
+    fn gamma_exact_text_must_match_its_condition_id_and_raw_payload() {
+        let payload = serde_json::json!({
+            "id": 42,
+            "conditionId": "condition-1",
+            "question": "Will BTC be higher in five minutes?",
+            "resolutionRules": "Resolve using the listed local source."
+        })
+        .to_string();
+        let row = gamma_exact_text_row(&payload, "resolutionRules");
+        let exact = validated_gamma_exact_text(row.clone())
+            .expect("metadata matches the raw Gamma payload");
+        assert_eq!(exact.question, "Will BTC be higher in five minutes?");
+
+        let mut fabricated_question = row.clone();
+        fabricated_question.question = "Fabricated question";
+        assert!(validated_gamma_exact_text(fabricated_question).is_none());
+
+        let mut mismatched_condition = row;
+        mismatched_condition.gamma_condition_id = "another-condition";
+        assert!(validated_gamma_exact_text(mismatched_condition).is_none());
+    }
+
+    #[test]
+    fn gamma_description_fallback_is_kept_as_described_source_text() {
+        let payload = serde_json::json!({
+            "id": 42,
+            "conditionId": "condition-1",
+            "question": "Will BTC be higher in five minutes?",
+            "description": "Resolve using the listed local source."
+        })
+        .to_string();
+        let exact = validated_gamma_exact_text(gamma_exact_text_row(&payload, "description"))
+            .expect("description fallback is explicit Gamma text");
+        assert_eq!(
+            exact.resolution_rules,
+            "Resolve using the listed local source."
+        );
+    }
+
+    #[test]
+    fn kachoio_metadata_requires_exact_local_question_and_rules() {
+        let local = local_market();
+        assert!(matches!(
+            validate_kachoio_market_metadata(Some(&local), None),
+            Err(KachoioMetadataRejection::MissingExactQuestionRules)
+        ));
+
+        let mut counts = Counts::default();
+        let local_markets = HashMap::from([(local.condition_id.clone(), local)]);
+        let tape_conditions = ["condition-1".to_owned()];
+        assert!(
+            join_kachoio_metadata(
+                &[],
+                &local_markets,
+                tape_conditions.iter(),
+                &HashMap::new(),
+                &mut counts,
+            )
+            .is_empty()
+        );
+        assert_eq!(counts.skipped_kachoio_missing_exact_question_rules, 1);
+    }
+
+    #[test]
+    fn kachoio_metadata_requires_five_minute_slug_duration_and_matching_source() {
+        let local = local_market();
+        let meta = exact_market_meta();
+        assert!(validate_kachoio_market_metadata(Some(&local), Some(&meta)).is_ok());
+
+        let mut wrong_duration = local.clone();
+        wrong_duration.market_end_ms = Some(1_700_000_299_000);
+        assert!(matches!(
+            validate_kachoio_market_metadata(Some(&wrong_duration), Some(&meta)),
+            Err(KachoioMetadataRejection::InvalidDuration)
+        ));
+
+        let mut wrong_slug = local;
+        wrong_slug.slug = "btc-updown-15m-1700000000".to_owned();
+        assert!(matches!(
+            validate_kachoio_market_metadata(Some(&wrong_slug), Some(&meta)),
+            Err(KachoioMetadataRejection::Invalid5mSlug)
+        ));
+    }
+
+    #[test]
+    fn gamma_text_synthesizes_tape_markets_outside_the_selected_universe() {
+        let local = local_market();
+        let local_markets = HashMap::from([(local.condition_id.clone(), local)]);
+        let gamma_text = HashMap::from([(
+            "condition-1".to_owned(),
+            GammaExactText {
+                market_id: "gamma-market-1".to_owned(),
+                question: "Will BTC be higher in five minutes?".to_owned(),
+                resolution_rules: "Resolve using the listed local source.".to_owned(),
+            },
+        )]);
+        let tape_conditions = ["condition-1".to_owned()];
+        let mut counts = Counts::default();
+        let joined = join_kachoio_metadata(
+            &[],
+            &local_markets,
+            tape_conditions.iter(),
+            &gamma_text,
+            &mut counts,
+        );
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].market_id, "gamma-market-1");
+        assert_eq!(joined[0].horizon, "5m");
+        assert!(matches!(
+            joined[0].split,
+            jevtrader::replay::types::Split::Exploration
+        ));
+        assert_eq!(counts.gamma_synthesized_markets, 1);
+        assert_eq!(counts.skipped_kachoio_missing_exact_question_rules, 0);
+    }
 
     fn cache_entry(live: bool) -> CachedJev {
         CachedJev {
