@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::QuoteThresholds;
+
 use super::report::ReportRow;
 use super::runner::{JevEvaluator, ReplayConfig, ReplayRunner, SyntheticItem};
 
@@ -128,6 +130,26 @@ impl TemporalWindow {
 pub enum SplitAssign {
     InSample,
     OutOfSample,
+}
+
+/// Assignment of one timestamped replay item to a temporal window side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemporalAssignment {
+    pub item_index: usize,
+    pub assignment: SplitAssign,
+}
+
+/// Results from one timestamp-based out-of-sample evaluation.
+#[derive(Debug, Clone)]
+pub struct TemporalWindowResult {
+    pub window: TemporalWindow,
+    pub assignments: Vec<TemporalAssignment>,
+    pub in_sample_count: usize,
+    pub out_of_sample_count: usize,
+    /// The config cloned for this window. Thresholds are fitted once from the
+    /// in-sample items and then remain unchanged while its OOS rows run.
+    pub config: ReplayConfig,
+    pub rows: Vec<ReportRow>,
 }
 
 /// Plans deterministic rolling timestamp windows.
@@ -276,16 +298,16 @@ pub fn try_purge_train(
     Ok((kept, dropped))
 }
 
-/// Applies the corrected purge contract to training candidates.
+/// Applies purge and then removes training candidates that overlap the
+/// embargo zone immediately after the test window.
 ///
 /// This compatibility helper keeps the original task-shaped API, but its
-/// inputs are **training candidates**, not the test set. It calls
-/// [`purge_train`] with `test_start_ms` as the train/test cut. `test_end_ms`
-/// and `embargo_ms` are validated for a well-formed test interval but do not
-/// remove test labels: doing so would be the common, incorrect implementation
-/// that purges the very OOS observations being measured. Embargo is instead a
-/// relation between consecutive windows and is checked with
-/// [`embargo_after_test`] or [`requires_gap_ms`].
+/// inputs are **training candidates**, not the test set. Purge still uses
+/// `test_start_ms` as the train/test cut, so test labels are never removed by
+/// this helper. The embargo zone is half-open:
+/// `[test_end_ms, test_end_ms + embargo_ms)`. A candidate that starts before
+/// the zone but spans into it is also removed. A zero-length embargo leaves
+/// the purge result unchanged.
 #[must_use]
 pub fn apply_purge_embargo(
     markets: &[MarketSpan],
@@ -294,10 +316,51 @@ pub fn apply_purge_embargo(
     purge_ms: i64,
     embargo_ms: i64,
 ) -> (Vec<MarketSpan>, Vec<MarketSpan>) {
-    if test_start_ms <= 0 || test_end_ms < test_start_ms || purge_ms < 0 || embargo_ms < 0 {
+    if test_start_ms <= 0
+        || test_end_ms <= 0
+        || test_end_ms < test_start_ms
+        || purge_ms < 0
+        || embargo_ms < 0
+    {
         return (Vec::new(), markets.to_vec());
     }
-    purge_train(markets, test_start_ms, purge_ms)
+
+    let (purged, mut dropped) = purge_train(markets, test_start_ms, purge_ms);
+    if embargo_ms == 0 {
+        return (purged, dropped);
+    }
+    let Some(embargo_end_ms) = test_end_ms.checked_add(embargo_ms) else {
+        return (Vec::new(), markets.to_vec());
+    };
+
+    let mut kept = Vec::with_capacity(purged.len());
+    for market in purged {
+        if overlaps_embargo_zone(&market, test_end_ms, embargo_end_ms, embargo_ms) {
+            dropped.push(market);
+        } else {
+            kept.push(market);
+        }
+    }
+    (kept, dropped)
+}
+
+fn overlaps_embargo_zone(
+    market: &MarketSpan,
+    test_end_ms: i64,
+    embargo_end_ms: i64,
+    embargo_ms: i64,
+) -> bool {
+    if embargo_ms == 0 {
+        return false;
+    }
+
+    let starts_in_zone = market.info_start_ms >= test_end_ms
+        && market.info_start_ms < embargo_end_ms
+        && requires_gap_ms(test_end_ms, market.info_start_ms, embargo_ms);
+    let crosses_zone_start = market.info_start_ms < test_end_ms
+        && market.resolution_ms >= test_end_ms
+        && market.info_start_ms < embargo_end_ms;
+    starts_in_zone || crosses_zone_start
 }
 
 /// Returns the actual gap between a prior test end and the next train start.
@@ -378,6 +441,67 @@ impl<E: JevEvaluator + Clone> WalkforwardRunner<E> {
             out.push((w.name.clone(), result.rows));
         }
         out
+    }
+
+    /// Evaluates timestamp-based windows without allowing OOS feedback into
+    /// calibration.
+    ///
+    /// `fit_thresholds` receives only the items assigned to the current
+    /// window's [`SplitAssign::InSample`] side. It is called once per valid
+    /// window. Its returned thresholds are installed into a clone of the
+    /// runner's base config, and that clone is frozen for the OOS replay. OOS
+    /// items are never passed to the fitter. Items in a temporal gap or
+    /// outside a window are not assigned or evaluated.
+    pub fn run_temporal_windows<F>(
+        &mut self,
+        items: &[SyntheticItem],
+        windows: &[TemporalWindow],
+        resolution_at_ms: i64,
+        mut fit_thresholds: F,
+    ) -> Vec<TemporalWindowResult>
+    where
+        F: FnMut(&[SyntheticItem], &ReplayConfig) -> QuoteThresholds,
+    {
+        let base_config = self.config.clone();
+        let mut results = Vec::new();
+
+        for window in windows {
+            if window.validate().is_err() {
+                continue;
+            }
+
+            let mut assignments = Vec::new();
+            let mut in_sample = Vec::new();
+            let mut out_of_sample = Vec::new();
+            for (item_index, item) in items.iter().enumerate() {
+                let Some(assignment) = window.assign(item.ts_ms) else {
+                    continue;
+                };
+                assignments.push(TemporalAssignment {
+                    item_index,
+                    assignment,
+                });
+                match assignment {
+                    SplitAssign::InSample => in_sample.push(item.clone()),
+                    SplitAssign::OutOfSample => out_of_sample.push(item.clone()),
+                }
+            }
+
+            let thresholds = fit_thresholds(&in_sample, &base_config);
+            let mut config = base_config.clone();
+            config.thresholds = thresholds;
+            let mut runner = ReplayRunner::new(config.clone(), self.evaluator.clone());
+            let evaluation = runner.run_synthetic(&out_of_sample, resolution_at_ms);
+            results.push(TemporalWindowResult {
+                window: window.clone(),
+                assignments,
+                in_sample_count: in_sample.len(),
+                out_of_sample_count: out_of_sample.len(),
+                config,
+                rows: evaluation.rows,
+            });
+        }
+        results
     }
 }
 

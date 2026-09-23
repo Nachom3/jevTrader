@@ -1,5 +1,6 @@
 use jevtrader::replay::{
-    BlockBootstrap, EconomySummary, MarketSpan, OosReport, SplitAssign, TemporalWindow,
+    BlockBootstrap, EconomySummary, Fidelity, MarketSpan, OosReport, ReplayConfig, Split,
+    SplitAssign, StubJev, SyntheticItem, TemporalWindow, WalkforwardRunner, apply_purge_embargo,
     embargo_flags, oos_report_with_draws, plan_windows, purge_train, requires_gap_ms,
     summarize_distribution,
 };
@@ -52,6 +53,26 @@ fn purge_uses_the_pre_cut_train_zone() {
 }
 
 #[test]
+fn apply_purge_embargo_removes_items_from_the_embargo_zone() {
+    let markets = vec![
+        MarketSpan::new("embargoed", 1_000, 1_000).unwrap(),
+        MarketSpan::new("clean", 900, 900).unwrap(),
+    ];
+
+    let (kept, dropped) = apply_purge_embargo(&markets, 1_000, 1_000, 0, 10);
+    assert_eq!(
+        kept.iter()
+            .map(|market| market.condition_id.as_str())
+            .collect::<Vec<_>>(),
+        ["clean"]
+    );
+    assert_eq!(dropped[0].condition_id, "embargoed");
+
+    let (kept_without_embargo, _) = apply_purge_embargo(&markets, 1_000, 1_000, 0, 0);
+    assert_eq!(kept_without_embargo.len(), 2);
+}
+
+#[test]
 fn consecutive_windows_mark_a_short_embargo_gap() {
     let windows = plan_windows(1_000, 1_400, 100, 100, 200);
     assert_eq!(windows.len(), 2);
@@ -61,6 +82,79 @@ fn consecutive_windows_mark_a_short_embargo_gap() {
         1
     ));
     assert_eq!(embargo_flags(&windows, 1), vec![true]);
+}
+
+#[test]
+fn temporal_oos_evaluation_fits_in_sample_and_reports_each_window() {
+    let items = vec![
+        synthetic_item(1_050, "in-0"),
+        synthetic_item(1_150, "oos-0"),
+        synthetic_item(1_250, "in-1"),
+        synthetic_item(1_350, "oos-1"),
+    ];
+    let windows = plan_windows(1_000, 1_400, 100, 100, 200);
+    let mut runner = WalkforwardRunner::new(ReplayConfig::smoke("temporal-oos"), StubJev::new(9));
+    let base_max_pairs = runner.config.max_pairs;
+    let mut fitted_from = Vec::new();
+
+    let results = runner.run_temporal_windows(&items, &windows, 2_000, |in_sample, config| {
+        fitted_from.push(
+            in_sample
+                .iter()
+                .map(|item| item.market_id.clone())
+                .collect::<Vec<_>>(),
+        );
+        let mut thresholds = config.thresholds;
+        thresholds.under_min = if in_sample[0].market_id == "in-0" {
+            0.71
+        } else {
+            0.72
+        };
+        thresholds
+    });
+
+    assert_eq!(
+        fitted_from,
+        vec![vec!["in-0".to_owned()], vec!["in-1".to_owned()]]
+    );
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].in_sample_count, 1);
+    assert_eq!(results[0].out_of_sample_count, 1);
+    assert_eq!(results[1].in_sample_count, 1);
+    assert_eq!(results[1].out_of_sample_count, 1);
+    assert_eq!(results[0].config.max_pairs, base_max_pairs);
+    assert_eq!(results[1].config.max_pairs, base_max_pairs);
+    assert_eq!(results[0].config.thresholds.under_min, 0.71);
+    assert_eq!(results[1].config.thresholds.under_min, 0.72);
+    assert_eq!(
+        results[0]
+            .assignments
+            .iter()
+            .map(|assignment| (assignment.item_index, assignment.assignment))
+            .collect::<Vec<_>>(),
+        vec![(0, SplitAssign::InSample), (1, SplitAssign::OutOfSample)]
+    );
+    assert!(results[0].rows.iter().all(|row| row.market_id == "oos-0"));
+    assert!(results[1].rows.iter().all(|row| row.market_id == "oos-1"));
+}
+
+fn synthetic_item(ts_ms: i64, market_id: &str) -> SyntheticItem {
+    let flow = SyntheticItem::neutral_flow();
+    SyntheticItem {
+        ts_ms,
+        book_bid: 0.40,
+        book_ask: 0.42,
+        spot: 100.0,
+        perp: 100.0,
+        spot_flow: flow,
+        poly_flow: flow,
+        market_id: market_id.to_owned(),
+        asset: "BTC".to_owned(),
+        horizon: "5m".to_owned(),
+        split: Split::OutOfSample,
+        fidelity: Fidelity::Exact,
+        regime: "NORMAL_VOL-SIDEWAYS".to_owned(),
+    }
 }
 
 #[test]
