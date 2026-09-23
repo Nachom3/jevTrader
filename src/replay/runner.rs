@@ -995,6 +995,7 @@ impl<E: JevEvaluator> ReplayRunner<E> {
                     fidelity: match fidelity {
                         Fidelity::Exact => "EXACT".to_owned(),
                         Fidelity::Proxy => "PROXY".to_owned(),
+                        Fidelity::SyntheticComplement => "SYNTHETIC_COMPLEMENT".to_owned(),
                         Fidelity::Unknown => "UNKNOWN".to_owned(),
                     },
                     fill_model: match self.config.fill {

@@ -53,6 +53,7 @@ impl HistoricalEvent {
 pub enum Fidelity {
     Exact,
     Proxy,
+    SyntheticComplement,
     Unknown,
 }
 
@@ -62,6 +63,7 @@ impl Fidelity {
         match self {
             Self::Exact => "EXACT",
             Self::Proxy => "PROXY",
+            Self::SyntheticComplement => "SYNTHETIC_COMPLEMENT",
             Self::Unknown => "UNKNOWN",
         }
     }

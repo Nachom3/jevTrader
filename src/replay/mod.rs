@@ -14,6 +14,7 @@ pub mod arms;
 pub mod bootstrap;
 pub mod campaign;
 pub mod clock;
+pub mod complement;
 pub mod economics;
 pub mod exits;
 pub mod fees;
@@ -44,6 +45,10 @@ pub use campaign::{
     run_episode_campaign, run_episode_campaign_with_caller,
 };
 pub use clock::ReplayClock;
+pub use complement::{
+    ComplementStats, NoTopOfBook, SYNTHETIC_COMPLEMENT_SOURCE, SyntheticComplement,
+    complement_no_to_yes, complement_no_to_yes_with_stats,
+};
 pub use economics::{ExecutionPath, ResolutionTimeFilter, classify_execution, passes, path_of};
 pub use exits::{
     ExitPolicy, HedgeQuote, MergeResult, hedge_quote, merge_pair, settle_hedge_pair,
